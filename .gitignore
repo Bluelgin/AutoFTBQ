@@ -1,0 +1,40 @@
+# API keys & config
+config.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+
+# PyInstaller
+*.spec
+build/
+dist/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Output
+questbook_output/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Temp
+*.tmp
+*.log
+nul
+
+# Example/reference files (keep source code only)
+example_all/
+FTB-Quests-source/
+FTB-Quests-main.zip
+exmaple.maid.snbt
