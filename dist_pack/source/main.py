@@ -116,7 +116,7 @@ class ModSelectDialog(tk.Toplevel):
         try:
             tk.Label(self, text="勾选要包含在任务书中的 Mod：",
                      font=("Microsoft YaHei", 12, "bold"), bg="#ffffff", fg="#333333").pack(pady=(15, 5))
-            tk.Label(self, text=f"检测到 {len(mods)} 个Mod — 默认全选，取消不需要的",
+            tk.Label(self, text=f"检测到 {len(mods)} 个Mod — 请选择需要的Mod（可多选）",
                      font=("Microsoft YaHei", 9), bg="#ffffff", fg="#888888").pack(pady=(0, 10))
 
             frame = tk.Frame(self, bg="#ffffff")
@@ -129,14 +129,11 @@ class ModSelectDialog(tk.Toplevel):
             self._lb.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
             scrollbar.config(command=self._lb.yview)
             self._mods = mods
-            self._selected_indices = set()
             for i, m in enumerate(mods):
                 cat_cn = CAT_LABEL.get(m.get("category", "unknown"), "?")
                 size_mb = m.get("size", 0) / (1024*1024)
                 label = f"{m['mod_name']:30s} [{cat_cn}]  ({size_mb:.1f}MB)"
                 self._lb.insert(tk.END, label)
-                self._selected_indices.add(i)
-                self._lb.selection_set(i)
 
             btnf = tk.Frame(self, bg="#ffffff")
             btnf.pack(fill=tk.X, pady=(0, 15), padx=20)
