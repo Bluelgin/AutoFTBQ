@@ -224,6 +224,8 @@ class QuestBookGenerator:
         if engine == "ollama":
             model = ollama_model or "qwen2.5-coder:7b"
             self.client = _oa.OllamaClient(model=model)
+        elif engine == "dummy":
+            self.client = None  # 不调用API，仅用于SNBT转换
         else:
             self.client = DeepSeekClient(api_key or "")
         self.all_mods = selected_mods or []
@@ -537,3 +539,85 @@ def generate_quest_book(api_key=None, selected_mods=None, mod_folder=None,
         progress_callback=progress_callback, lang=lang, engine=engine,
         ollama_model=ollama_model
     ).generate()
+
+
+def build_full_prompt(selected_mods, mod_folder=None, lang="zh"):
+    """构建完整的提示词，供用户复制到网页AI使用"""
+    gen = QuestBookGenerator(
+        api_key="", selected_mods=selected_mods, mod_folder=mod_folder,
+        lang=lang, engine="dummy"
+    )
+    gen.client = None  # 不需要API调用
+    mod_list = gen._build_mod_list()
+    all_ns = gen._build_all_ns()
+    scanned = gen._scan_items()
+    item_cat = _ms.build_item_catalog_for_prompt(scanned, gen.all_mods)
+
+    if lang == "zh":
+        sp = (
+            "你是Minecraft整合包「任务指南」设计师。为FTB Quests设计一份非常丰富的任务书JSON。\n\n"
+            "【核心定位】：这是一份「教程指南」，帮助玩家体验每个Mod的全部玩法内容。\n"
+            "【结构要求】：\n"
+            "1. 原版MC: 4-6章，每章10-15个任务。开局→石器→铁器→钻石→附魔→下界→酿造→末地。\n"
+            "2. 每个核心Mod: 1-2章，每章10-15个任务。从入门到精通。\n"
+            "3. 辅助Mod在奖励中引用其物品。\n4. 总任务数: 70-120。\n\n"
+            "【支线与主线】：主线用dependencies链，支线无dependencies（每章2-3条）。\n\n"
+            "【任务规范】：\n"
+            "- 任务类型: item(收集/合成), advancement(进度), kill, dimension, checkmark(信息)\n"
+            "- 布局: x间隔2.0水平展开\n"
+            "- 严格使用下面的物品ID，不要编造不存在的ID\n\n"
+            "JSON示例:\n"
+            '{"title":"整合包指南","chapters":[\n'
+            '{"id":"ch1","title":"原版·开局","icon":"minecraft:wooden_pickaxe","quests":[\n'
+            '{"id":"q1","title":"获得原木","subtitle":"空手撸树","icon":"minecraft:oak_log","tasks":[{"type":"item","target":"minecraft:oak_log","count":16}],"rewards":[{"type":"item","target":"minecraft:apple","count":4}],"shape":"square","x":0,"y":0},\n'
+            '{"id":"q2","title":"制作工作台","subtitle":"4个木板合成","dependencies":["q1"],"icon":"minecraft:crafting_table","tasks":[{"type":"item","target":"minecraft:crafting_table","count":1}],"rewards":[{"type":"xp","count":10}],"shape":"square","x":2.0,"y":0}\n]}\n]}\n\n'
+            "要求: 70-120总任务。所有title/subtitle用中文。只输出JSON，json前后不要多余内容。"
+        )
+    else:
+        sp = (
+            "You are a Minecraft modpack quest guide designer for FTB Quests. "
+            "Design a VERY RICH questbook JSON.\n\n"
+            "STRUCTURE: 1. Vanilla: 4-6 ch, 10-15 quests each. "
+            "2. Each core mod: 1-2 ch, 10-15 quests each. "
+            "3. Total: 70-120 quests. "
+            "TASK TYPES: item/advancement/kill/dimension/checkmark. "
+            "Layout: x spaced 2.0. Use ONLY the item IDs listed below.\n\n"
+            "Output ONLY valid JSON."
+        )
+    up = (
+        f"{mod_list}\n\n"
+        f"=== 可用命名空间 ===\n{all_ns}\n\n"
+        f"{item_cat}\n\n"
+        "请严格使用上面列出的物品ID。只输出JSON。"
+    ) if lang == "zh" else (
+        f"{mod_list}\n\n=== Namespaces ===\n{all_ns}\n\n"
+        f"{item_cat}\n\n"
+        "Use ONLY the IDs above. Output ONLY JSON."
+    )
+    return sp + "\n\n" + up
+
+
+def import_json_to_snbt(json_text, selected_mods=None, mod_folder=None,
+                         progress_callback=None):
+    """
+    导入外部JSON文本并生成SNBT文件。
+    适用于用户从网页AI复制JSON的场景。
+    """
+    if progress_callback: progress_callback("解析JSON...", 5)
+    if not json_text or not json_text.strip():
+        raise Exception("JSON内容为空")
+
+    # 创建临时生成器用于SNBT输出
+    gen = QuestBookGenerator(
+        api_key="", selected_mods=selected_mods or [],
+        mod_folder=mod_folder, lang="zh", engine="dummy"
+    )
+    gen.client = None
+
+    # 扫描物品（如果可以）
+    scanned_items = gen._scan_items() if mod_folder and os.path.isdir(mod_folder) else {}
+
+    if progress_callback: progress_callback("转换SNBT并校验...", 60)
+    output_dir = gen._save_snbt_files(json_text, scanned_items)
+    if progress_callback: progress_callback("完成!", 100)
+    return output_dir

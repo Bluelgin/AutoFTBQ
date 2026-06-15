@@ -10,11 +10,12 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
-APP_NAME = "AutoFTBQ"; VERSION = "1.1.1"; AUTHOR = "Taki"
+APP_NAME = "AutoFTBQ"; VERSION = "1.2.0"; AUTHOR = "Taki"
 CONFIG_PATH = os.path.join(SCRIPT_DIR, "config.json")
 
 AI_AVAILABLE = False; AI_IMPORT_ERROR = ""
 scan_mod_folder = None; generate_quest_book = None
+build_full_prompt = None; import_json_to_snbt = None
 
 LANG = "zh"
 
@@ -94,6 +95,7 @@ def t(key, *args):
 
 def _check_deps():
     global AI_AVAILABLE, AI_IMPORT_ERROR, scan_mod_folder, generate_quest_book
+    global build_full_prompt, import_json_to_snbt
     try: import requests
     except ImportError: AI_IMPORT_ERROR = t("dep_msg"); return False
     try:
@@ -101,6 +103,8 @@ def _check_deps():
         importlib.reload(ai_module)
         scan_mod_folder = ai_module.scan_mod_folder
         generate_quest_book = ai_module.generate_quest_book
+        build_full_prompt = ai_module.build_full_prompt
+        import_json_to_snbt = ai_module.import_json_to_snbt
         AI_AVAILABLE = True; return True
     except Exception as e: AI_IMPORT_ERROR = str(e); return False
 
@@ -182,7 +186,7 @@ class App:
     def __init__(self, root):
         self.root = root
         self.root.title(f"{APP_NAME} v{VERSION} - {AUTHOR}")
-        self.root.geometry("680x630")
+        self.root.geometry("680x680")
         self.root.resizable(False, False)
         self.root.configure(bg="#ffffff")
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -192,6 +196,7 @@ class App:
         self.mod_folder_var = tk.StringVar(value=self.config.get("mod_folder", ""))
         self.engine_var = tk.StringVar(value=self.config.get("engine", "deepseek"))
         self.ollama_model_var = tk.StringVar(value=self.config.get("ollama_model", ""))
+        self.mode_var = tk.StringVar(value="api")  # "api" or "import"
         self.generating = False
         self.selected_mods = []
         self._detected_mods = []
@@ -391,6 +396,43 @@ class App:
         self.generate_btn = tk.Button(btnf, font=bf, command=self._on_generate, bg="#cccccc", fg="#ffffff", bd=0, relief=tk.FLAT, cursor="hand2", activebackground="#cccccc", activeforeground="#ffffff", padx=20, pady=8, state=tk.DISABLED)
         self.generate_btn.pack(side=tk.RIGHT)
 
+        # ═══ 导入JSON区域（默认隐藏） ═══
+        # ═══ 工作模式切换 ═══
+        self.mode_frame = tk.Frame(mf, bg="#ffffff")
+        self.mode_frame.pack(fill=tk.X, pady=(0, 8))
+        tk.Label(self.mode_frame, text="模式:", font=("Microsoft YaHei", 10, "bold"),
+                 fg="#555555", bg="#ffffff").pack(side=tk.LEFT, padx=(0, 10))
+        self.mode_api_btn = tk.Button(self.mode_frame, text="API 生成", font=("Microsoft YaHei", 10),
+                                       command=lambda: self._switch_mode("api"),
+                                       bg="#4a90d9", fg="#ffffff", bd=1, relief=tk.SOLID,
+                                       cursor="hand2", padx=14, pady=3)
+        self.mode_api_btn.pack(side=tk.LEFT, padx=(0, 5))
+        self.mode_import_btn = tk.Button(self.mode_frame, text="导入 JSON", font=("Microsoft YaHei", 10),
+                                          command=lambda: self._switch_mode("import"),
+                                          bg="#e0e0e0", fg="#555555", bd=1, relief=tk.SOLID,
+                                          cursor="hand2", padx=14, pady=3)
+        self.mode_import_btn.pack(side=tk.LEFT)
+
+        # ═══ 导入JSON区域（默认隐藏） ═══
+        self.import_frame = tk.Frame(mf, bg="#ffffff")
+        self.import_label = tk.Label(self.import_frame, text="粘贴AI生成的JSON：",
+                                      font=("Microsoft YaHei", 10, "bold"), fg="#555555", bg="#ffffff")
+        self.import_label.pack(anchor=tk.W, pady=(0, 4))
+        self.json_text = tk.Text(self.import_frame, height=4, font=("Consolas", 9),
+                                  bg="#fafafa", fg="#333333", bd=1, relief=tk.SOLID,
+                                  wrap=tk.WORD)
+        self.json_text.pack(fill=tk.X)
+        self.import_btn_row = tk.Frame(self.import_frame, bg="#ffffff")
+        self.import_btn_row.pack(fill=tk.X, pady=(6, 0))
+        self.copy_prompt_btn = tk.Button(self.import_btn_row, text="📋 复制提示词", font=("Microsoft YaHei", 10),
+                                          command=self._on_copy_prompt, bg="#ff9800", fg="#ffffff",
+                                          bd=1, relief=tk.SOLID, cursor="hand2", padx=14, pady=4)
+        self.copy_prompt_btn.pack(side=tk.LEFT)
+        self.paste_json_btn = tk.Button(self.import_btn_row, text="📄 粘贴并生成SNBT", font=("Microsoft YaHei", 10),
+                                         command=self._on_import_json, bg="#4caf50", fg="#ffffff",
+                                         bd=1, relief=tk.SOLID, cursor="hand2", padx=14, pady=4)
+        self.paste_json_btn.pack(side=tk.RIGHT)
+
         self.footer_label = tk.Label(mf, font=("Microsoft YaHei", 8), fg="#cccccc", bg="#ffffff")
         self.footer_label.pack(pady=(15, 0))
 
@@ -481,6 +523,70 @@ class App:
         except Exception: pass
         if locked: self.generate_btn.config(text=t("generating"), state=tk.DISABLED, bg="#ff9800", activebackground="#ff9800")
         else: self._check_config_ready(); self.generate_btn.config(text=t("generate")); self.progress_label.config(text=""); self.progress_bar["value"]=0
+
+    def _switch_mode(self, mode):
+        self.mode_var.set(mode)
+        if mode == "import":
+            self.mode_api_btn.config(bg="#e0e0e0", fg="#555555")
+            self.mode_import_btn.config(bg="#4caf50", fg="#ffffff")
+            # 隐藏API引擎和生成按钮相关
+            self.api_frame.pack_forget()
+            self.engine_frame.pack_forget()
+            self.generate_btn.pack_forget()
+            self.save_btn.pack_forget()
+            # 显示导入区域
+            self.import_frame.pack(before=self.footer_label, fill=tk.X, pady=(0, 10))
+            self.set_info("导入模式 — 先复制提示词到网页AI，再把返回的JSON粘贴到这里", "info")
+        else:
+            self.mode_api_btn.config(bg="#4a90d9", fg="#ffffff")
+            self.mode_import_btn.config(bg="#e0e0e0", fg="#555555")
+            # 恢复API模式UI
+            self.import_frame.pack_forget()
+            self.api_frame.pack(before=self.engine_frame, fill=tk.X, pady=(0, 18))
+            self.engine_frame.pack(before=self.progress_label.master, fill=tk.X, pady=(0, 12))
+            self.save_btn.pack(side=tk.LEFT, padx=(0, 10))
+            self.generate_btn.pack(side=tk.RIGHT)
+            self._check_config_ready()
+
+    def _on_copy_prompt(self):
+        if not self.selected_mods:
+            messagebox.showwarning("提示", "请先在API模式中选择Mod，再切换到导入模式。")
+            return
+        try:
+            mf = self.mod_folder_var.get().strip()
+            prompt = build_full_prompt(self.selected_mods, mf, LANG)
+            self.root.clipboard_clear()
+            self.root.clipboard_append(prompt)
+            self.set_info("提示词已复制到剪贴板！粘贴到 chat.deepseek.com 即可", "success")
+            messagebox.showinfo("成功", "提示词已复制到剪贴板！\n\n打开 chat.deepseek.com，粘贴并发送。\nAI返回JSON后，复制粘贴回本软件的输入框。")
+        except Exception as e:
+            messagebox.showerror("错误", f"生成提示词失败: {e}")
+
+    def _on_import_json(self):
+        json_input = self.json_text.get("1.0", tk.END).strip()
+        if not json_input:
+            messagebox.showwarning("提示", "请先粘贴AI返回的JSON内容。")
+            return
+        self.generating = True
+        self._lock_ui(True)
+        self.set_info("正在转换SNBT...", "info")
+        mf = self.mod_folder_var.get().strip()
+        threading.Thread(target=self._import_thread, args=(json_input, mf), daemon=True).start()
+
+    def _import_thread(self, json_input, mf):
+        try:
+            out = import_json_to_snbt(
+                json_text=json_input,
+                selected_mods=self.selected_mods or None,
+                mod_folder=mf if os.path.isdir(mf) else None,
+                progress_callback=self._on_progress
+            )
+            self.root.after(0, self._on_done, out)
+        except Exception as e:
+            self.root.after(0, self._on_fail, str(e))
+        finally:
+            self.generating = False
+            self.root.after(0, self._on_finish)
 
     def _on_save_config(self):
         engine = self.engine_var.get()
