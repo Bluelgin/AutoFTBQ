@@ -10,6 +10,11 @@ try:
 except ImportError:
     import mod_scanner as _ms
 
+try:
+    from . import ollama_adapter as _oa
+except ImportError:
+    import ollama_adapter as _oa
+
 DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
 DEEPSEEK_MODEL = "deepseek-chat"
 MAX_RETRIES = 3; RETRY_DELAY = 3; API_TIMEOUT = 300
@@ -211,13 +216,21 @@ class DeepSeekClient:
 
 # ════════════════════════════════════════════════════════
 class QuestBookGenerator:
-    def __init__(self, api_key, selected_mods, mod_folder=None, progress_callback=None, lang="zh"):
-        self.client = DeepSeekClient(api_key)
-        self.all_mods = selected_mods
+    def __init__(self, api_key=None, selected_mods=None, mod_folder=None,
+                 progress_callback=None, lang="zh", engine="deepseek",
+                 ollama_model=None):
+        # 根据引擎创建客户端
+        self.engine = engine
+        if engine == "ollama":
+            model = ollama_model or "qwen2.5-coder:7b"
+            self.client = _oa.OllamaClient(model=model)
+        else:
+            self.client = DeepSeekClient(api_key or "")
+        self.all_mods = selected_mods or []
         self.mod_folder = mod_folder
         self.cb = progress_callback
         self.lang = lang
-        self.prog_mods, self.util_mods, self.unk = classify_mods(selected_mods)
+        self.prog_mods, self.util_mods, self.unk = classify_mods(selected_mods or [])
         self._all_items = None  # 扫描结果缓存
 
     def _progress(self, msg, pct=None):
@@ -347,7 +360,8 @@ class QuestBookGenerator:
                 "Design a very rich questbook JSON with branches and main lines. "
                 "Use ONLY the item IDs listed above."
             )
-        return self.client.chat([{"role":"system","content":sp},{"role":"user","content":up}], max_tokens=24576, temperature=0.5)
+        max_tok = 40960 if self.engine == "ollama" else 32768
+        return self.client.chat([{"role":"system","content":sp},{"role":"user","content":up}], max_tokens=max_tok, temperature=0.5)
 
     def _save_snbt_files(self, quest_json_text, scanned_items=None):
         SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -489,7 +503,23 @@ class QuestBookGenerator:
         m = re.search(r'```(?:json)?\s*\n(.*?)```', text, re.DOTALL)
         if m: return m.group(1).strip()
         s, e = text.find("{"), text.rfind("}")
-        return text[s:e+1] if s>=0 and e>s else text
+        if s < 0 or e <= s: return text
+        raw = text[s:e+1]
+        # 智能修复截断的JSON：去掉截断中残破的最后一段
+        # 找最后一个合法的 }, 或 ], 或 " 结尾
+        last_good = -1
+        for p in [raw.rfind('\n    }\n'), raw.rfind('\n  }\n'), raw.rfind('\n  ]\n'),
+                   raw.rfind('\n    ]\n'), raw.rfind('}\n'), raw.rfind(']\n')]:
+            if p > last_good:
+                last_good = p
+        if last_good > len(raw) * 0.7:  # 只在大部完整时才截断修复
+            raw = raw[:last_good+1]  # 保留那个 }
+            # 补上缺失的闭合
+            d = sum(1 for c in raw if c == '{') - sum(1 for c in raw if c == '}')
+            a = sum(1 for c in raw if c == '[') - sum(1 for c in raw if c == ']')
+            raw += ']'*a + '}'*d
+            return raw
+        return raw
 
 def _fx(raw):
     if not raw: return "minecraft:stone"
@@ -497,8 +527,13 @@ def _fx(raw):
     return raw if ":" in raw else f"minecraft:{raw}"
 def _uid(): return uuid.uuid4().hex[:16]
 
-def generate_quest_book(api_key, selected_mods, mod_folder=None, progress_callback=None, lang="zh"):
+def generate_quest_book(api_key=None, selected_mods=None, mod_folder=None,
+                         progress_callback=None, lang="zh", engine="deepseek",
+                         ollama_model=None):
     if progress_callback: progress_callback("分析选中的Mod...",3)
     if not selected_mods: raise Exception("未选中任何Mod。")
-    return QuestBookGenerator(api_key, selected_mods, mod_folder=mod_folder,
-                              progress_callback=progress_callback, lang=lang).generate()
+    return QuestBookGenerator(
+        api_key=api_key, selected_mods=selected_mods, mod_folder=mod_folder,
+        progress_callback=progress_callback, lang=lang, engine=engine,
+        ollama_model=ollama_model
+    ).generate()
