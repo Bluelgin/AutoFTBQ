@@ -249,28 +249,28 @@ def build_item_catalog_for_prompt(all_items, selected_mods):
         "minecraft:firework_rocket", "minecraft:beacon", "minecraft:bell",
         "minecraft:honey_bottle", "minecraft:honeycomb",
     ]
-    # 从扫描结果中获取minecraft items
+    # 从扫描结果中获取minecraft items — 全部列出，不截断
     mc_scanned = all_items.get("minecraft", {})
     mc_combined = set(mc_items_common)
     mc_combined.update(mc_scanned.keys())
-    lines.append(f"  minecraft ({len(mc_combined)} items): {', '.join(sorted(mc_combined)[:80])} ...")
-    if len(mc_combined) > 80:
-        remaining = sorted(mc_combined)[80:]
-        lines.append(f"    (more minecraft items): {', '.join(remaining[:60])}")
-        if len(remaining) > 60:
-            lines.append(f"    ... and {len(remaining)-60} more minecraft items")
+    lines.append(f"  minecraft ({len(mc_combined)} items):")
+    # 每行最多列出15个物品ID，换行展示全部
+    mc_sorted = sorted(mc_combined)
+    for i in range(0, len(mc_sorted), 15):
+        chunk = mc_sorted[i:i+15]
+        lines.append(f"    {', '.join(chunk)}")
 
-    # 各mod的物品
+    # 各mod的物品 — 全部列出，不截断
     for ns in sorted(active_ns):
         if ns == "minecraft":
             continue
         items = all_items.get(ns, {})
         if items:
-            sample_ids = sorted(items.keys())[:40]
+            sorted_ids = sorted(items.keys())
             lines.append(f"\n  {ns} ({len(items)} items):")
-            lines.append(f"    {', '.join(sample_ids)}")
-            if len(items) > 40:
-                lines.append(f"    ... and {len(items)-40} more items in {ns}")
+            for i in range(0, len(sorted_ids), 15):
+                chunk = sorted_ids[i:i+15]
+                lines.append(f"    {', '.join(chunk)}")
         else:
             lines.append(f"\n  {ns}: (no items scanned from JAR — use commonly known IDs)")
 

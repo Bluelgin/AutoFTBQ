@@ -35,6 +35,8 @@ nul
 
 # Example/reference files (keep source code only)
 example_all/
+_example_extracted/
+example_all.zip
 FTB-Quests-source/
 FTB-Quests-main.zip
 exmaple.maid.snbt

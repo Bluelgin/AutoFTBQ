@@ -255,7 +255,7 @@ class QuestBookGenerator:
             self._all_items = {}
         return self._all_items
 
-    def generate(self):
+    def generate(self, output_dir=None):
         self._progress("分析选中的Mod列表...",5)
         mod_list = self._build_mod_list()
         all_ns = self._build_all_ns()
@@ -269,9 +269,9 @@ class QuestBookGenerator:
         quest_json_text = self._generate_questbook(mod_list, all_ns, item_catalog)
 
         self._progress("解析并校验物品ID...",80)
-        output_dir = self._save_snbt_files(quest_json_text, scanned_items)
+        saved_dir = self._save_snbt_files(quest_json_text, scanned_items, output_dir)
         self._progress("完成!",100)
-        return output_dir
+        return saved_dir
 
     def _build_mod_list(self):
         lines = ["=== 核心Mod (有玩法/进度) ==="]
@@ -307,25 +307,30 @@ class QuestBookGenerator:
                 "3. 辅助Mod在奖励中引用其物品，不做单独大量章节。\n"
                 "4. 总任务数目标：70-120个任务。\n\n"
                 "【支线与主线设计】：\n"
-                "- 主线：必须有dependencies链，玩家按顺序完成。\n"
-                "- 支线：不使用dependencies（或依赖主线中的某个节点），玩家可以随时做。\n"
-                "- 每个章节至少有2-3条支线任务。\n"
+                "- 主线：必须有dependencies链，玩家按顺序完成。主线任务之间必须用dependencies逐级链接。\n"
+                "- 支线：必须依赖主线中的某个节点（用dependencies引用主线任务ID），不能完全独立浮动。\n"
+                "- 每个章节至少有2-3条支线任务，每条支线挂接到不同的主线节点上。\n"
                 "- 支线任务是主线的补充（如：主线让你做基础机器，支线让你升级机器）。\n\n"
+                "【坐标布局（非常重要）】：\n"
+                "- 主线任务：x从0开始，依次递增2.0（如 0, 2, 4, 6, 8...），y统一为0。\n"
+                "- 支线任务：x与所挂接的主线任务相同，y偏移±2.0（上方或下方）。\n"
+                "- 第二条支线挂到下一个主线节点，y偏移±2.0。\n"
+                "- 每个任务必须提供x和y坐标。\n\n"
                 "【任务设计规范】：\n"
                 "- 每个任务: title, subtitle(玩法提示), tasks(目标), rewards(奖励)\n"
                 "- 任务类型: item(收集/合成), advancement(进度), kill, dimension, checkmark(仅信息类)\n"
-                "- 布局: x间隔2.0水平展开，相关任务同y，分支任务偏离y\n"
                 "- 物品ID只能用minecraft:或上述已安装Mod的命名空间\n"
                 "- 奖励按阶段合理分配\n\n"
                 "JSON示例(含主线+支线):\n"
                 '{"title":"整合包指南","chapters":[\n'
                 '{"id":"ch_wood","title":"原版·木石时代","icon":"minecraft:wooden_pickaxe","quests":[\n'
-                '{"id":"q_log","title":"获得原木","subtitle":"空手撸树获得原木","icon":"minecraft:oak_log","tasks":[{"type":"item","target":"minecraft:oak_log","count":16}],"rewards":[{"type":"item","target":"minecraft:apple","count":4}],"shape":"square","x":0,"y":0},\n'
-                '{"id":"q_table","title":"制作工作台","subtitle":"用4个木板合成","dependencies":["q_log"],"icon":"minecraft:crafting_table","tasks":[{"type":"item","target":"minecraft:crafting_table","count":1}],"rewards":[{"type":"xp","count":10}],"shape":"square","x":2.0,"y":0},\n'
-                '{"id":"q_stone","title":"石器工具","subtitle":"圆石→石镐/石斧/石锹","dependencies":["q_table"],"icon":"minecraft:stone_pickaxe","tasks":[{"type":"item","target":"minecraft:stone_pickaxe","count":1}],"rewards":[{"type":"xp","count":20}],"shape":"square","x":4.0,"y":0},\n'
-                '{"id":"q_branch_food","title":"支线·解决食物","subtitle":"击杀动物获取食物","icon":"minecraft:cooked_beef","tasks":[{"type":"item","target":"minecraft:cooked_beef","count":8}],"rewards":[{"type":"xp","count":15}],"shape":"diamond","x":2.0,"y":-2.0}\n'
+                '{"id":"q_log","title":"获得原木","subtitle":"空手撸树获得原木","icon":"minecraft:oak_log","tasks":[{"type":"item","target":"minecraft:oak_log","count":16}],"rewards":[{"type":"item","target":"minecraft:apple","count":4}],"shape":"square","x":0.0,"y":0.0},\n'
+                '{"id":"q_table","title":"制作工作台","subtitle":"用4个木板合成","dependencies":["q_log"],"icon":"minecraft:crafting_table","tasks":[{"type":"item","target":"minecraft:crafting_table","count":1}],"rewards":[{"type":"xp","count":10}],"shape":"square","x":2.0,"y":0.0},\n'
+                '{"id":"q_stone","title":"石器工具","subtitle":"圆石→石镐/石斧/石锹","dependencies":["q_table"],"icon":"minecraft:stone_pickaxe","tasks":[{"type":"item","target":"minecraft:stone_pickaxe","count":1}],"rewards":[{"type":"xp","count":20}],"shape":"square","x":4.0,"y":0.0},\n'
+                '{"id":"q_furnace","title":"制作熔炉","subtitle":"8个圆石合成熔炉","dependencies":["q_stone"],"icon":"minecraft:furnace","tasks":[{"type":"item","target":"minecraft:furnace","count":1}],"rewards":[{"type":"xp","count":15}],"shape":"square","x":6.0,"y":0.0},\n'
+                '{"id":"q_branch_food","title":"支线·解决食物","subtitle":"击杀动物获取食物","dependencies":["q_table"],"icon":"minecraft:cooked_beef","tasks":[{"type":"item","target":"minecraft:cooked_beef","count":8}],"rewards":[{"type":"xp","count":15}],"shape":"diamond","x":2.0,"y":-2.0}\n'
                 ']}\n]}\n\n'
-                "要求: 70-120总任务。所有title/subtitle用中文。只输出JSON。"
+                "要求: 70-120总任务。所有title/subtitle用中文。每个任务必须有dependencies（除第一个外）。只输出JSON。"
             )
             up = (
                 f"{mod_list}\n\n"
@@ -365,9 +370,12 @@ class QuestBookGenerator:
         max_tok = 40960 if self.engine == "ollama" else 32768
         return self.client.chat([{"role":"system","content":sp},{"role":"user","content":up}], max_tokens=max_tok, temperature=0.5)
 
-    def _save_snbt_files(self, quest_json_text, scanned_items=None):
+    def _save_snbt_files(self, quest_json_text, scanned_items=None, output_dir=None):
         SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-        base_dir = os.path.join(SCRIPT_DIR, OUTPUT_DIR_NAME)
+        if output_dir and os.path.isdir(os.path.dirname(output_dir)):
+            base_dir = output_dir
+        else:
+            base_dir = os.path.join(SCRIPT_DIR, OUTPUT_DIR_NAME)
         os.makedirs(base_dir, exist_ok=True)
         chapters_dir = os.path.join(base_dir, "chapters")
         os.makedirs(chapters_dir, exist_ok=True)
@@ -444,9 +452,8 @@ class QuestBookGenerator:
                     tg = t.get("target",""); cnt = int(t.get("count",1))
                     to = {"id":tid,"type":tt}
                     if tt == "item":
-                        to["item"] = {"id":_fx(tg),"Count":_B(1),"tag":{}}
-                        to["count"] = _L(cnt) if cnt>10 else cnt
-                        to["consume_items"] = False
+                        # Real FTBQ uses flat string "mod:id" for simple items
+                        to["item"] = _fx(tg)
                     elif tt == "advancement":
                         to["advancement"] = tg or "minecraft:story/root"
                         to["criterion"] = ""
@@ -463,26 +470,51 @@ class QuestBookGenerator:
                     rg = r.get("target",""); cnt = int(r.get("count",1))
                     ro = {"id":ri,"type":rt}
                     if rt == "item":
-                        ro["item"] = {"id":_fx(rg),"Count":_B(1),"tag":{}}
-                        ro["count"] = cnt
+                        ro["item"] = _fx(rg)
+                        if cnt != 1: ro["count"] = cnt
                     elif rt == "command": ro["command"] = rg or "/say Hello"
                     elif rt == "xp": ro["xp_amount"] = cnt
                     elif rt == "xp_levels": ro["xp_levels"] = cnt
                     rewards.append(ro)
                 deps = q.get("dependencies",[])
                 if isinstance(deps,str): deps = [deps]
-                du = [qid2uid[d] for d in deps if d in qid2uid]
+                du = []
+                for d in deps:
+                    if d in qid2uid:
+                        du.append(qid2uid[d])
+                    else:
+                        print(f"[WARN] Dependency '{d}' not found in quest '{qt}' — removing")
                 sh = q.get("shape","square")
-                if sh not in ("square","diamond","hexagon","gear"): sh = "square"
-                xv = _D(round(qi*2.0, 1))
-                yv = _D(round((qi%3)*1.5 - 1.5, 1))
+                # FTBQ supports: square, diamond, hexagon, gear, circle, rsquare
+                if sh not in ("square","diamond","hexagon","gear","circle","rsquare"):
+                    sh = "square"
+                # 优先使用AI指定的坐标，只在缺失时自动计算
+                ai_x = q.get("x")
+                ai_y = q.get("y")
+                if ai_x is not None and ai_y is not None and isinstance(ai_x, (int, float)) and isinstance(ai_y, (int, float)):
+                    xv = _D(round(float(ai_x), 1))
+                    yv = _D(round(float(ai_y), 1))
+                else:
+                    # 为无坐标的任务做智能布局：有依赖的跟随第一个依赖的位置偏移，无依赖的串行排列
+                    if du:
+                        ref_x, ref_y = qi * 2.0, 0.0
+                        for ref_q in qents:
+                            if ref_q["id"] in du:
+                                ref_x, ref_y = float(str(ref_q["x"])[:-1]), float(str(ref_q["y"])[:-1])
+                                break
+                        xv = _D(round(ref_x + 2.0, 1))
+                        yv = _D(round(ref_y, 1))
+                    else:
+                        xv = _D(round(qi * 2.0, 1))
+                        yv = _D(0.0)
                 qo = {"id":qu,"title":qt,"icon":qi_icon,"x":xv,"y":yv,"shape":sh,"dependencies":du,"tasks":tasks,"rewards":rewards}
                 if qs: qo["subtitle"] = qs
                 if qde: qo["description"] = qde
                 qents.append(qo)
+            # quest_links left empty — FTBQ auto-draws dependency lines
             cho = {
                 "default_hide_dependency_lines":False,"default_quest_shape":"","filename":chu,
-                "group":chu,"icon":chi_icon,"id":chu,"images":[],"order_index":chi,
+                "group":chu,"icon":chi_icon,"id":chu,"order_index":chi,
                 "quest_links":[],"quests":qents,"title":cht,
             }
             with open(os.path.join(chapters_dir,f"{chu}.snbt"),"w",encoding="utf-8") as f:f.write(to_snbt(cho))
@@ -492,10 +524,12 @@ class QuestBookGenerator:
             "default_autoclaim_rewards":"disabled","default_consume_items":False,
             "default_quest_disable_jei":False,"default_quest_shape":"circle",
             "default_reward_team":False,"detection_delay":20,"disable_gui":False,
-            "drop_loot_crates":False,"emergency_items_cooldown":300,"grid_scale":0.5,
+            "drop_book_on_death":False,"drop_loot_crates":False,
+            "emergency_items_cooldown":300,"grid_scale":_D(0.5),
             "icon":"minecraft:book","lock_message":"",
             "loot_crate_no_drop":{"boss":0,"monster":600,"passive":4000},
-            "pause_game":False,"progression_mode":"linear","title":title,"version":13,
+            "pause_game":False,"progression_mode":"linear","show_lock_icons":True,
+            "title":title,"version":13,
         }
         with open(os.path.join(base_dir,"data.snbt"),"w",encoding="utf-8") as f:f.write(to_snbt(ds))
         return base_dir
@@ -523,6 +557,32 @@ class QuestBookGenerator:
             return raw
         return raw
 
+def _build_quest_links(qents):
+    """
+    根据dependencies自动生成quest_links实现FTB Quests视觉连线。
+    对每对有依赖关系的任务创建一个双向link。
+    返回: [{"id":..., "source_id":..., "target_id":..., "type":"normal"}, ...]
+    """
+    links = []
+    link_ids_seen = set()
+    for q in qents:
+        qid = q["id"]
+        deps = q.get("dependencies", [])
+        for dep_id in deps:
+            # 创建唯一的link_id
+            pair = tuple(sorted([qid, dep_id]))
+            if pair in link_ids_seen:
+                continue
+            link_ids_seen.add(pair)
+            link_id = "link_" + uuid.uuid4().hex[:6].upper()
+            links.append({
+                "id": link_id,
+                "source_id": dep_id,   # 依赖的任务是源（先完成）
+                "target_id": qid,       # 当前任务是目标
+                "type": "normal"
+            })
+    return links
+
 def _fx(raw):
     if not raw: return "minecraft:stone"
     raw = str(raw).strip()
@@ -531,14 +591,14 @@ def _uid(): return uuid.uuid4().hex[:16]
 
 def generate_quest_book(api_key=None, selected_mods=None, mod_folder=None,
                          progress_callback=None, lang="zh", engine="deepseek",
-                         ollama_model=None):
+                         ollama_model=None, output_dir=None):
     if progress_callback: progress_callback("分析选中的Mod...",3)
     if not selected_mods: raise Exception("未选中任何Mod。")
     return QuestBookGenerator(
         api_key=api_key, selected_mods=selected_mods, mod_folder=mod_folder,
         progress_callback=progress_callback, lang=lang, engine=engine,
         ollama_model=ollama_model
-    ).generate()
+    ).generate(output_dir=output_dir)
 
 
 def build_full_prompt(selected_mods, mod_folder=None, lang="zh"):
@@ -561,17 +621,23 @@ def build_full_prompt(selected_mods, mod_folder=None, lang="zh"):
             "1. 原版MC: 4-6章，每章10-15个任务。开局→石器→铁器→钻石→附魔→下界→酿造→末地。\n"
             "2. 每个核心Mod: 1-2章，每章10-15个任务。从入门到精通。\n"
             "3. 辅助Mod在奖励中引用其物品。\n4. 总任务数: 70-120。\n\n"
-            "【支线与主线】：主线用dependencies链，支线无dependencies（每章2-3条）。\n\n"
+            "【支线与主线】：主线用dependencies链串联所有任务。支线必须挂接主线节点（用dependencies引用主线ID），不能完全独立。每章2-3条支线。\n\n"
+            "【坐标布局（非常重要）】：\n"
+            "- 主线x: 0→2→4→6→8...，y统一为0\n"
+            "- 支线x与挂接主线相同，y偏移±2.0\n"
+            "- 每个任务必须提供x和y坐标\n\n"
             "【任务规范】：\n"
             "- 任务类型: item(收集/合成), advancement(进度), kill, dimension, checkmark(信息)\n"
-            "- 布局: x间隔2.0水平展开\n"
             "- 严格使用下面的物品ID，不要编造不存在的ID\n\n"
-            "JSON示例:\n"
+            "JSON示例(5个任务含1支线):\n"
             '{"title":"整合包指南","chapters":[\n'
             '{"id":"ch1","title":"原版·开局","icon":"minecraft:wooden_pickaxe","quests":[\n'
-            '{"id":"q1","title":"获得原木","subtitle":"空手撸树","icon":"minecraft:oak_log","tasks":[{"type":"item","target":"minecraft:oak_log","count":16}],"rewards":[{"type":"item","target":"minecraft:apple","count":4}],"shape":"square","x":0,"y":0},\n'
-            '{"id":"q2","title":"制作工作台","subtitle":"4个木板合成","dependencies":["q1"],"icon":"minecraft:crafting_table","tasks":[{"type":"item","target":"minecraft:crafting_table","count":1}],"rewards":[{"type":"xp","count":10}],"shape":"square","x":2.0,"y":0}\n]}\n]}\n\n'
-            "要求: 70-120总任务。所有title/subtitle用中文。只输出JSON，json前后不要多余内容。"
+            '{"id":"q1","title":"获得原木","subtitle":"空手撸树","icon":"minecraft:oak_log","tasks":[{"type":"item","target":"minecraft:oak_log","count":16}],"rewards":[{"type":"item","target":"minecraft:apple","count":4}],"shape":"square","x":0.0,"y":0.0},\n'
+            '{"id":"q2","title":"制作工作台","subtitle":"4个木板合成","dependencies":["q1"],"icon":"minecraft:crafting_table","tasks":[{"type":"item","target":"minecraft:crafting_table","count":1}],"rewards":[{"type":"xp","count":10}],"shape":"square","x":2.0,"y":0.0},\n'
+            '{"id":"q3","title":"石器工具","subtitle":"圆石→石镐","dependencies":["q2"],"icon":"minecraft:stone_pickaxe","tasks":[{"type":"item","target":"minecraft:stone_pickaxe","count":1}],"rewards":[{"type":"xp","count":20}],"shape":"square","x":4.0,"y":0.0},\n'
+            '{"id":"q4","title":"制作熔炉","subtitle":"8圆石合成","dependencies":["q3"],"icon":"minecraft:furnace","tasks":[{"type":"item","target":"minecraft:furnace","count":1}],"rewards":[{"type":"xp","count":15}],"shape":"square","x":6.0,"y":0.0},\n'
+            '{"id":"q5","title":"支线·解决食物","subtitle":"击杀动物获取食物","dependencies":["q2"],"icon":"minecraft:cooked_beef","tasks":[{"type":"item","target":"minecraft:cooked_beef","count":8}],"rewards":[{"type":"xp","count":15}],"shape":"diamond","x":2.0,"y":-2.0}\n]}\n]}\n\n'
+            "要求: 70-120总任务。所有title/subtitle用中文。每个任务必须有dependencies（除第一个外）。只输出JSON，json前后不要多余内容。"
         )
     else:
         sp = (
@@ -598,7 +664,7 @@ def build_full_prompt(selected_mods, mod_folder=None, lang="zh"):
 
 
 def import_json_to_snbt(json_text, selected_mods=None, mod_folder=None,
-                         progress_callback=None):
+                         progress_callback=None, output_dir=None):
     """
     导入外部JSON文本并生成SNBT文件。
     适用于用户从网页AI复制JSON的场景。
@@ -618,6 +684,6 @@ def import_json_to_snbt(json_text, selected_mods=None, mod_folder=None,
     scanned_items = gen._scan_items() if mod_folder and os.path.isdir(mod_folder) else {}
 
     if progress_callback: progress_callback("转换SNBT并校验...", 60)
-    output_dir = gen._save_snbt_files(json_text, scanned_items)
+    saved_dir = gen._save_snbt_files(json_text, scanned_items, output_dir)
     if progress_callback: progress_callback("完成!", 100)
-    return output_dir
+    return saved_dir
