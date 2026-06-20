@@ -3,7 +3,7 @@
 ![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)
 ![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey.svg)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
-![Version](https://img.shields.io/badge/Version-1.2.0-orange.svg)
+![Version](https://img.shields.io/badge/Version-1.2.5-orange.svg)
 
 基于 AI 自动生成 Minecraft [FTB Quests](https://www.curseforge.com/minecraft/mc-mods/ftb-quests-forge) 任务书的桌面工具。
 
@@ -13,13 +13,16 @@
 
 - **一键生成**：选择 Mod 文件夹 → 勾选 Mod → AI 自动生成完整任务指南（70-120 个任务）
 - **双引擎支持**：DeepSeek API（在线）或 Ollama（本地模型），可自由切换
+- **启动弹窗选择模式**：API 自动生成 / 导入 JSON，选中后不可更改，UI 简洁分离
 - **两种工作模式**：
-  - **API 自动生成模式** — AI 直接生成 JSON 并转为 SNBT
-  - **导入模式** — 保存提示词+物品ID文件 → 上传网页 AI → 粘贴 JSON → 转为 SNBT
+  - **🤖 API 自动生成模式** — AI 直接生成 JSON 并转为 SNBT
+  - **📄 导入 JSON 模式** — 保存提示词+物品ID文件 → 上传网页 AI → 粘贴 JSON → 转为 SNBT（仅建议 Mod 数量 100 以内的整合包使用）
 - **真实物品ID**：自动扫描 .jar/.zip 文件提取真实物品ID，确保图标正确显示
 - **主线+支线**：AI 自动设计合理的主线依赖链和支线任务结构
 - **智能坐标布局**：主线任务横向排列，支线任务挂接主线并上下偏移
 - **ID 校验**：生成后自动校验所有物品ID有效性，出具详细报告
+- **全量物品 ID 提示**：prompt 中列出全部物品 ID 不再截断，确保 AI 生成图标正确率
+- **自定义输出目录**：两种模式均支持指定输出路径，留空则保存到默认 `questbook_output/` 文件夹，路径会随配置持久化
 - **内置 151 个知名 Mod 信息库**：自动识别 Tinkers、Create、Botania、Mekanism 等并分类
 - **中英文双语界面**：一键切换
 
@@ -192,11 +195,13 @@ questbook_output/
 
 | 文件 | 行数 | 说明 |
 |------|------|------|
-| `main.py` | ~880 | Tkinter GUI 主界面 — 模式选择、双引擎切换、UI 交互、线程管理 |
+| `main.py` | ~900 | Tkinter GUI 主界面 — 启动模式弹窗、双引擎切换、输出目录、UI 交互、线程管理 |
 | `ai_module.py` | ~660 | AI 核心模块 — DeepSeek/Ollama API、JSON 解析、SNBT 生成、151 个 Mod 库 |
-| `mod_scanner.py` | ~360 | 物品ID扫描器 — JAR/ZIP 解压、模型/配方/语言文件扫描、缓存、ID 校验 |
+| `mod_scanner.py` | ~360 | 物品ID扫描器 — JAR/ZIP 解压、模型/配方/语言文件扫描、全量物品目录生成、缓存、ID 校验 |
 | `ollama_adapter.py` | ~110 | Ollama 适配器 — 自动检测、模型推荐、HTTP API |
-| `config.example.json` | 4 | 配置模板 — API Key + Mod 文件夹路径 |
+| `mcwiki_crawler.py` | ~250 | MC百科 Wiki 爬虫 — 并发抓取 Mod 页面，提取物品/方块信息增强数据 |
+| `config.example.json` | 4 | 配置模板 — API Key + Mod 文件夹 + 输出目录 |
+| `start.bat` | - | Windows 一键启动脚本 |
 
 ---
 
