@@ -3,6 +3,7 @@
 """AutoFTBQ AI模块 — FTB Quests SNBT生成 v4"""
 
 import os, re, json, uuid, time
+import concurrent.futures
 import requests
 
 try:
@@ -62,92 +63,218 @@ def to_snbt(obj):
     return _snbt_value(obj)
 
 # ════════════════════════════════════════════════════════
+# MOD_DB: key → {name, modid, category, parent?}
+# parent=None 表示核心 Mod；parent="xxx" 表示是 xxx 的附属 Mod
 MOD_DB = {
-    "minecraft":("Minecraft","minecraft","vanilla"),
-    "tconstruct":("Tinkers Construct","tconstruct","tech"),
-    "botania":("Botania","botania","magic"),
-    "thaumcraft":("Thaumcraft","thaumcraft","magic"),
-    "twilightforest":("Twilight Forest","twilightforest","world"),
-    "twilight":("Twilight Forest","twilightforest","world"),
-    "betweenlands":("The Betweenlands","thebetweenlands","world"),
-    "abyssalcraft":("AbyssalCraft","abyssalcraft","world"),
-    "iceandfire":("Ice and Fire","iceandfire","world"),
-    "lycanitesmobs":("Lycanites Mobs","lycanitesmobs","mob"),
-    "mowziesmobs":("Mowzies Mobs","mowziesmobs","mob"),
-    "aether":("The Aether","aether","world"),
-    "galacticraft":("Galacticraft","galacticraft","tech"),
-    "mekanism":("Mekanism","mekanism","tech"),
-    "draconicevolution":("Draconic Evolution","draconicevolution","tech"),
-    "astralsorcery":("Astral Sorcery","astralsorcery","magic"),
-    "bloodmagic":("Blood Magic","bloodmagic","magic"),
-    "bewitchment":("Bewitchment","bewitchment","magic"),
-    "arsnouveau":("Ars Nouveau","arsnouveau","magic"),
-    "ars":("Ars Nouveau","arsnouveau","magic"),
-    "roots":("Roots","roots","magic"),
-    "embers":("Embers","embers","tech"),
-    "naturesaura":("Natures Aura","naturesaura","magic"),
-    "psi":("Psi","psi","magic"),
-    "apotheosis":("Apotheosis","apotheosis","magic"),
-    "create":("Create","create","tech"),
-    "immersiveengineering":("Immersive Engineering","immersiveengineering","tech"),
-    "immersive":("Immersive Engineering","immersiveengineering","tech"),
-    "thermalexpansion":("Thermal Expansion","thermalexpansion","tech"),
-    "thermal":("Thermal Series","thermal","tech"),
-    "enderio":("Ender IO","enderio","tech"),
-    "rftools":("RFTools","rftools","tech"),
-    "mysticalagriculture":("Mystical Agriculture","mysticalagriculture","magic"),
-    "mysticalag":("Mystical Agriculture","mysticalagriculture","magic"),
-    "jei":("Just Enough Items","jei","utility"),
-    "nei":("Not Enough Items","nei","utility"),
-    "journeymap":("JourneyMap","journeymap","utility"),
-    "xaerominimap":("Xaeros Minimap","xaerominimap","utility"),
-    "xaero":("Xaeros Minimap","xaerominimap","utility"),
-    "waystones":("Waystones","waystones","utility"),
-    "ironchest":("Iron Chests","ironchest","utility"),
-    "ironchests":("Iron Chests","ironchest","utility"),
-    "storagedrawers":("Storage Drawers","storagedrawers","utility"),
-    "sophisticatedbackpacks":("Sophisticated Backpacks","sophisticatedbackpacks","utility"),
-    "refinedstorage":("Refined Storage","refinedstorage","utility"),
-    "appliedenergistics":("Applied Energistics 2","appliedenergistics2","utility"),
-    "appliedenergistics2":("Applied Energistics 2","appliedenergistics2","utility"),
-    "ae2":("Applied Energistics 2","appliedenergistics2","utility"),
-    "cyclic":("Cyclic","cyclic","utility"),
-    "quark":("Quark","quark","utility"),
-    "randomthings":("Random Things","randomthings","utility"),
-    "openblocks":("OpenBlocks","openblocks","utility"),
-    "farmersdelight":("Farmers Delight","farmersdelight","food"),
-    "harvestcraft":("Pams HarvestCraft","harvestcraft","food"),
-    "pamsharvestcraft":("Pams HarvestCraft","harvestcraft","food"),
-    "chisel":("Chisel","chisel","decor"),
-    "chiselsandbits":("Chisels & Bits","chiselsandbits","decor"),
-    "biomesoplenty":("Biomes O Plenty","biomesoplenty","world"),
-    "bop":("Biomes O Plenty","biomesoplenty","world"),
-    "industrialcraft":("IndustrialCraft 2","ic2","tech"),
-    "ic2":("IndustrialCraft 2","ic2","tech"),
-    "buildcraft":("BuildCraft","buildcraft","tech"),
-    "forestry":("Forestry","forestry","tech"),
-    "railcraft":("Railcraft","railcraft","tech"),
-    "stevescarts":("Steves Carts","stevescarts","tech"),
-    "actuallyadditions":("Actually Additions","actuallyadditions","tech"),
-    "extrautils":("Extra Utilities 2","extrautils2","tech"),
-    "extrautilities":("Extra Utilities 2","extrautils2","tech"),
-    "bigreactors":("Big Reactors","bigreactors","tech"),
-    "extreme":("Extreme Reactors","bigreactors","tech"),
-    "nuclearcraft":("NuclearCraft","nuclearcraft","tech"),
-    "rftoolsdimensions":("RFTools Dimensions","rftoolsdim","tech"),
-    "environmentaltech":("Environmental Tech","environmentaltech","tech"),
-    "solarflux":("Solar Flux Reborn","solarflux","tech"),
-    "fluxnetworks":("Flux Networks","fluxnetworks","tech"),
-    "projecte":("ProjectE","projecte","tech"),
-    "equivalentexchange":("ProjectE","projecte","tech"),
-    "electroblob":("Electroblobs Wizardry","ebwizardry","magic"),
-    "ebwizardry":("Electroblobs Wizardry","ebwizardry","magic"),
-    "mahoutsukai":("Mahou Tsukai","mahoutsukai","magic"),
-    "manametal":("ManaMetal","manametal","magic"),
-    "witchery":("Witchery","witchery","magic"),
-    "gravestone":("GraveStone Mod","gravestone","utility"),
-    "tombstone":("Corail Tombstone","tombstone","utility"),
-    "corail":("Corail Tombstone","tombstone","utility"),
+    "minecraft": {"name":"Minecraft","modid":"minecraft","category":"vanilla"},
+    "tconstruct": {"name":"Tinkers Construct","modid":"tconstruct","category":"tech"},
+    "botania": {"name":"Botania","modid":"botania","category":"magic"},
+    "thaumcraft": {"name":"Thaumcraft","modid":"thaumcraft","category":"magic"},
+    "twilightforest": {"name":"Twilight Forest","modid":"twilightforest","category":"world"},
+    "twilight": {"name":"Twilight Forest","modid":"twilightforest","category":"world"},
+    "betweenlands": {"name":"The Betweenlands","modid":"thebetweenlands","category":"world"},
+    "abyssalcraft": {"name":"AbyssalCraft","modid":"abyssalcraft","category":"world"},
+    "iceandfire": {"name":"Ice and Fire","modid":"iceandfire","category":"world"},
+    "lycanitesmobs": {"name":"Lycanites Mobs","modid":"lycanitesmobs","category":"mob"},
+    "mowziesmobs": {"name":"Mowzies Mobs","modid":"mowziesmobs","category":"mob"},
+    "aether": {"name":"The Aether","modid":"aether","category":"world"},
+    "galacticraft": {"name":"Galacticraft","modid":"galacticraft","category":"tech"},
+    "mekanism": {"name":"Mekanism","modid":"mekanism","category":"tech"},
+    "draconicevolution": {"name":"Draconic Evolution","modid":"draconicevolution","category":"tech"},
+    "astralsorcery": {"name":"Astral Sorcery","modid":"astralsorcery","category":"magic"},
+    "bloodmagic": {"name":"Blood Magic","modid":"bloodmagic","category":"magic"},
+    "bewitchment": {"name":"Bewitchment","modid":"bewitchment","category":"magic"},
+    "arsnouveau": {"name":"Ars Nouveau","modid":"arsnouveau","category":"magic"},
+    "ars": {"name":"Ars Nouveau","modid":"arsnouveau","category":"magic"},
+    "roots": {"name":"Roots","modid":"roots","category":"magic"},
+    "embers": {"name":"Embers","modid":"embers","category":"tech"},
+    "naturesaura": {"name":"Natures Aura","modid":"naturesaura","category":"magic"},
+    "psi": {"name":"Psi","modid":"psi","category":"magic"},
+    "apotheosis": {"name":"Apotheosis","modid":"apotheosis","category":"magic"},
+    "create": {"name":"Create","modid":"create","category":"tech"},
+    "immersiveengineering": {"name":"Immersive Engineering","modid":"immersiveengineering","category":"tech"},
+    "immersive": {"name":"Immersive Engineering","modid":"immersiveengineering","category":"tech"},
+    "thermalexpansion": {"name":"Thermal Expansion","modid":"thermalexpansion","category":"tech"},
+    "thermal": {"name":"Thermal Series","modid":"thermal","category":"tech"},
+    "enderio": {"name":"Ender IO","modid":"enderio","category":"tech"},
+    "rftools": {"name":"RFTools","modid":"rftools","category":"tech"},
+    "mysticalagriculture": {"name":"Mystical Agriculture","modid":"mysticalagriculture","category":"magic"},
+    "mysticalag": {"name":"Mystical Agriculture","modid":"mysticalagriculture","category":"magic"},
+    "jei": {"name":"Just Enough Items","modid":"jei","category":"utility"},
+    "nei": {"name":"Not Enough Items","modid":"nei","category":"utility"},
+    "journeymap": {"name":"JourneyMap","modid":"journeymap","category":"utility"},
+    "xaerominimap": {"name":"Xaeros Minimap","modid":"xaerominimap","category":"utility"},
+    "xaero": {"name":"Xaeros Minimap","modid":"xaerominimap","category":"utility"},
+    "waystones": {"name":"Waystones","modid":"waystones","category":"utility"},
+    "ironchest": {"name":"Iron Chests","modid":"ironchest","category":"utility"},
+    "ironchests": {"name":"Iron Chests","modid":"ironchest","category":"utility"},
+    "storagedrawers": {"name":"Storage Drawers","modid":"storagedrawers","category":"utility"},
+    "sophisticatedbackpacks": {"name":"Sophisticated Backpacks","modid":"sophisticatedbackpacks","category":"utility"},
+    "refinedstorage": {"name":"Refined Storage","modid":"refinedstorage","category":"utility"},
+    "appliedenergistics": {"name":"Applied Energistics 2","modid":"appliedenergistics2","category":"utility"},
+    "appliedenergistics2": {"name":"Applied Energistics 2","modid":"appliedenergistics2","category":"utility"},
+    "ae2": {"name":"Applied Energistics 2","modid":"appliedenergistics2","category":"utility"},
+    "cyclic": {"name":"Cyclic","modid":"cyclic","category":"utility"},
+    "quark": {"name":"Quark","modid":"quark","category":"utility"},
+    "randomthings": {"name":"Random Things","modid":"randomthings","category":"utility"},
+    "openblocks": {"name":"OpenBlocks","modid":"openblocks","category":"utility"},
+    "farmersdelight": {"name":"Farmers Delight","modid":"farmersdelight","category":"food"},
+    "harvestcraft": {"name":"Pams HarvestCraft","modid":"harvestcraft","category":"food"},
+    "pamsharvestcraft": {"name":"Pams HarvestCraft","modid":"harvestcraft","category":"food"},
+    "chisel": {"name":"Chisel","modid":"chisel","category":"decor"},
+    "chiselsandbits": {"name":"Chisels & Bits","modid":"chiselsandbits","category":"decor"},
+    "biomesoplenty": {"name":"Biomes O Plenty","modid":"biomesoplenty","category":"world"},
+    "bop": {"name":"Biomes O Plenty","modid":"biomesoplenty","category":"world"},
+    "industrialcraft": {"name":"IndustrialCraft 2","modid":"ic2","category":"tech"},
+    "ic2": {"name":"IndustrialCraft 2","modid":"ic2","category":"tech"},
+    "buildcraft": {"name":"BuildCraft","modid":"buildcraft","category":"tech"},
+    "forestry": {"name":"Forestry","modid":"forestry","category":"tech"},
+    "railcraft": {"name":"Railcraft","modid":"railcraft","category":"tech"},
+    "stevescarts": {"name":"Steves Carts","modid":"stevescarts","category":"tech"},
+    "actuallyadditions": {"name":"Actually Additions","modid":"actuallyadditions","category":"tech"},
+    "extrautils": {"name":"Extra Utilities 2","modid":"extrautils2","category":"tech"},
+    "extrautilities": {"name":"Extra Utilities 2","modid":"extrautils2","category":"tech"},
+    "bigreactors": {"name":"Big Reactors","modid":"bigreactors","category":"tech"},
+    "extreme": {"name":"Extreme Reactors","modid":"bigreactors","category":"tech"},
+    "nuclearcraft": {"name":"NuclearCraft","modid":"nuclearcraft","category":"tech"},
+    "rftoolsdimensions": {"name":"RFTools Dimensions","modid":"rftoolsdim","category":"tech"},
+    "environmentaltech": {"name":"Environmental Tech","modid":"environmentaltech","category":"tech"},
+    "solarflux": {"name":"Solar Flux Reborn","modid":"solarflux","category":"tech"},
+    "fluxnetworks": {"name":"Flux Networks","modid":"fluxnetworks","category":"tech"},
+    "projecte": {"name":"ProjectE","modid":"projecte","category":"tech"},
+    "equivalentexchange": {"name":"ProjectE","modid":"projecte","category":"tech"},
+    "electroblob": {"name":"Electroblobs Wizardry","modid":"ebwizardry","category":"magic"},
+    "ebwizardry": {"name":"Electroblobs Wizardry","modid":"ebwizardry","category":"magic"},
+    "mahoutsukai": {"name":"Mahou Tsukai","modid":"mahoutsukai","category":"magic"},
+    "manametal": {"name":"ManaMetal","modid":"manametal","category":"magic"},
+    "witchery": {"name":"Witchery","modid":"witchery","category":"magic"},
+    "gravestone": {"name":"GraveStone Mod","modid":"gravestone","category":"utility"},
+    "tombstone": {"name":"Corail Tombstone","modid":"tombstone","category":"utility"},
+    "corail": {"name":"Corail Tombstone","modid":"tombstone","category":"utility"},
+}
+
+# 附属 Mod 关系数据库：addon_modid → parent_modid
+# 这些 Mod 本身没有独立玩法，必须依附父 Mod 存在
+ADDON_PARENTS = {
+    # Mekanism 附属
+    "mekanismgenerators": "mekanism",
+    "mekanismtools": "mekanism",
+    "mekanismadditions": "mekanism",
+    # Create 附属
+    "createstuffadditions": "create",
+    "createcafe": "create",
+    "createdeco": "create",
+    "createbigcannons": "create",
+    # Tinkers 附属
+    "tinkerstoolleveling": "tconstruct",
+    "constructsarmory": "tconstruct",
+    "tinkersplanner": "tconstruct",
+    # IC2 附属
+    "advancedmachines": "ic2",
+    "compactsolars": "ic2",
+    "gravisuite": "ic2",
+    "ic2nuclearcrafting": "ic2",
+    # Thaumcraft 附属
+    "thaumictinkerer": "thaumcraft",
+    "forbiddenmagic": "thaumcraft",
+    "thaumicenergistics": "thaumcraft",
+    "thaumicbases": "thaumcraft",
+    "thaumicrestoration": "thaumcraft",
+    "thaumicaugmentation": "thaumcraft",
+    "thaumicwonders": "thaumcraft",
+    # Thermal 附属
+    "thermaldynamics": "thermal",
+    "thermalinnovation": "thermal",
+    "thermalintegration": "thermal",
+    "thermallogistics": "thermal",
+    # Immersive Engineering 附属
+    "immersivepetroleum": "immersiveengineering",
+    "immersivetech": "immersiveengineering",
+    # Botania 附属
+    "extrabotany": "botania",
+    "mythicbotany": "botania",
+    # BloodMagic 附属
+    "bloodarsenal": "bloodmagic",
+    "sanguisscientia": "bloodmagic",
+    # AE2 附属
+    "ae2wtlib": "appliedenergistics2",
+    "appliedmekanistics": "appliedenergistics2",
+    "ae2things": "appliedenergistics2",
+    # BuildCraft 附属
+    "buildcraft robotics": "buildcraft",
+    "buildcraftcompat": "buildcraft",
+    # Forestry 附属
+    "gendustry": "forestry",
+    "binnie": "forestry",
+    "magicbees": "forestry",
+    "extrabees": "forestry",
+    # Ars Nouveau 附属
+    "toomanyglyphs": "arsnouveau",
+    "arscreo": "arsnouveau",
+    "arsnouveauperipherals": "arsnouveau",
+    # Create 附属（更多）
+    "vintageimprovements": "create",
+    "createaddition": "create",
+    "createenchantmentindustry": "create",
+    "creategarnished": "create",
+    "createnuclear": "create",
+    "createoreexcavation": "create",
+    "createsteamnrails": "create",
+    # Refined Storage 附属
+    "refinedstorageaddons": "refinedstorage",
+    "rebornstorage": "refinedstorage",
+    "rsinfinitybooster": "refinedstorage",
+    # RFTools 附属
+    "rftoolsbase": "rftools",
+    "rftoolsbuilder": "rftools",
+    "rftoolscontrol": "rftools",
+    "rftoolspower": "rftools",
+    "rftoolsstorage": "rftools",
+    "rftoolsutility": "rftools",
+    # Actually Additions 附属
+    "actuallybaubles": "actuallyadditions",
+    # Psi 附属
+    "rpsideas": "psi",
+    "psionicupgrades": "psi",
+    "psipherals": "psi",
+    # AstralSocery 附属
+    "astralsorceryperipherals": "astralsorcery",
+    # Galacticraft 附属
+    "extraplanets": "galacticraft",
+    "galacticraftplanets": "galacticraft",
+    "zollern": "galacticraft",
+    "moreplanets": "galacticraft",
+    # Twilight Forest 附属
+    "twilightforesttweaks": "twilightforest",
+    # Betweenlands 附属
+    "betweenlandsaddons": "thebetweenlands",
+    # Aether 附属
+    "aetherii": "aether",
+    "deepaether": "aether",
+    "aetherredux": "aether",
+    "aetherlostcontent": "aether",
+    # Ice and Fire 附属
+    "spartanfire": "iceandfire",
+    "iafgraves": "iceandfire",
+    # Embers 附属
+    "soot": "embers",
+    "aetherworks": "embers",
+    # Roots 附属
+    "rootclassic": "roots",
+    # Quark 附属
+    "quarkoddities": "quark",
+    # IronChests 附属
+    "ironbackpacks": "ironchest",
+    # Sophisticated 系列
+    "sophisticatedcore": "sophisticatedbackpacks",
+    "sophisticatedstorage": "sophisticatedbackpacks",
+    # 兼容层（没有独立玩法，不生成章节）
+    "tinkersmekanism": "tconstruct",
+    "thaumcraftmekanism": "thaumcraft",
+    "thaumicjei": "thaumcraft",
+    "thaumcraftinventoryscanning": "thaumcraft",
+    "tinker_io": "tconstruct",
+    "tinkerores": "tconstruct",
 }
 
 CAT_LABEL = {"vanilla":"原版","tech":"科技","magic":"魔法","world":"维度/Boss","mob":"生物","utility":"辅助","food":"食物","decor":"装饰","unknown":"未知"}
@@ -157,10 +284,14 @@ def _parse_mod(filename, filepath=None):
     for ext in (".jar",".zip",".JAR",".ZIP"):
         if base.endswith(ext): base = base[:-len(ext)]; break
     base_ns = base.lower().replace("-","").replace("_","").replace(" ","")
-    for key,(name,mid,cat) in MOD_DB.items():
+    for key, info in MOD_DB.items():
         if key in base_ns:
             size = os.path.getsize(filepath) if filepath else 0
-            return {"filename":filename,"mod_name":name,"mod_id":mid,"category":cat,"size":size}
+            mod_id = info["modid"]
+            # 检查是否是附属Mod
+            parent = ADDON_PARENTS.get(mod_id)
+            return {"filename":filename,"mod_name":info["name"],"mod_id":mod_id,
+                    "category":info["category"],"size":size,"parent":parent}
     cleaned = re.sub(r'[-_]\d+[.]\d+[.]\d+.*$','',base)
     cleaned = re.sub(r'[-_](mc|MC|forge|fabric|release|beta|alpha|r\d+|universal|sources|deobf).*$','',cleaned,flags=re.IGNORECASE)
     cleaned = re.sub(r'[-_]\d+$','',cleaned).strip("-_ ")
@@ -168,7 +299,10 @@ def _parse_mod(filename, filepath=None):
     mod_id = re.sub(r'[^a-z0-9_]','',cleaned.lower().replace(" ","_")) or re.sub(r'[^a-zA-Z0-9]','',base)[:20].lower()
     mod_name = re.sub(r'\s+',' ',re.sub(r'[-_]',' ',cleaned)).strip().title()
     size = os.path.getsize(filepath) if filepath else 0
-    return {"filename":filename,"mod_name":mod_name,"mod_id":mod_id,"category":"unknown","size":size}
+    # 也检查未识别Mod是否在ADDON_PARENTS中
+    parent = ADDON_PARENTS.get(mod_id)
+    return {"filename":filename,"mod_name":mod_name,"mod_id":mod_id,
+            "category":"unknown","size":size,"parent":parent}
 
 def scan_mod_folder(folder_path):
     mods = []
@@ -183,13 +317,17 @@ def scan_mod_folder(folder_path):
     return mods
 
 def classify_mods(mods):
-    progression, utility, unknown = [], [], []
+    progression, utility, addon, unknown = [], [], [], []
     for m in mods:
-        cat = m.get("category","unknown")
-        if cat in ("tech","magic","world","mob"): progression.append(m)
-        elif cat in ("utility","food","decor"): utility.append(m)
-        else: unknown.append(m)
-    return progression, utility, unknown
+        if m.get("parent"):
+            addon.append(m)                     # 已识别的附属Mod
+        elif m.get("category","unknown") in ("tech","magic","world","mob"):
+            progression.append(m)               # 核心玩法Mod
+        elif m.get("category","unknown") in ("utility","food","decor"):
+            utility.append(m)                   # 辅助Mod
+        else:
+            unknown.append(m)
+    return progression, utility, addon, unknown
 
 # ════════════════════════════════════════════════════════
 class DeepSeekClient:
@@ -232,8 +370,9 @@ class QuestBookGenerator:
         self.mod_folder = mod_folder
         self.cb = progress_callback
         self.lang = lang
-        self.prog_mods, self.util_mods, self.unk = classify_mods(selected_mods or [])
+        self.prog_mods, self.util_mods, self.addon_mods, self.unk = classify_mods(selected_mods or [])
         self._all_items = None  # 扫描结果缓存
+        self.use_wiki = False
 
     def _progress(self, msg, pct=None):
         if self.cb: self.cb(msg, pct)
@@ -256,28 +395,186 @@ class QuestBookGenerator:
         return self._all_items
 
     def generate(self, output_dir=None):
-        self._progress("分析选中的Mod列表...",5)
-        mod_list = self._build_mod_list()
-        all_ns = self._build_all_ns()
-
-        # 扫描真实物品ID并构建目录
-        self._progress("扫描Mod中的物品ID...",10)
+        self._progress("分析选中的Mod列表...", 5)
         scanned_items = self._scan_items()
-        item_catalog = _ms.build_item_catalog_for_prompt(scanned_items, self.all_mods)
+        # 自动检测依赖库/无内容 Mod
+        _ms.detect_library_mods(self.prog_mods, scanned_items)
+        _ms.detect_library_mods(self.util_mods, scanned_items)
+        _ms.detect_library_mods(self.addon_mods, scanned_items)
+        _ms.detect_library_mods(self.unk, scanned_items)
+        self.all_mods = [m for m in self.all_mods if not m.get("is_library")]
+        self.prog_mods = [m for m in self.prog_mods if not m.get("is_library")]
+        self.util_mods = [m for m in self.util_mods if not m.get("is_library")]
+        self.addon_mods = [m for m in self.addon_mods if not m.get("is_library")]
+        self.unk = [m for m in self.unk if not m.get("is_library")]
 
-        self._progress("生成丰富的任务书JSON (含支线/主线)...",15)
-        quest_json_text = self._generate_questbook(mod_list, all_ns, item_catalog)
+        total_mods = len(self.prog_mods) + len(self.unk)
+        BATCH_SIZE = 12  # 每批最多处理12个Mod
 
-        self._progress("解析并校验物品ID...",80)
-        saved_dir = self._save_snbt_files(quest_json_text, scanned_items, output_dir)
-        self._progress("完成!",100)
+        if total_mods <= BATCH_SIZE or not self.client or self.engine == "dummy":
+            # 小规模 → 单次调用
+            mod_list = self._build_mod_list()
+            all_ns = self._build_all_ns()
+            item_catalog = _ms.build_item_catalog_for_prompt(scanned_items, self.all_mods)
+            # 构造合成链提示
+            recipe_hints = _ms.build_recipe_chain_hints(self.all_mods, max_chains_per_mod=5)
+            if recipe_hints:
+                item_catalog = recipe_hints + "\n\n" + item_catalog
+            # 注入 Wiki 数据
+            wiki_text = ""
+            if getattr(self, "use_wiki", False):
+                try:
+                    from . import mcwiki_crawler as _wiki
+                except ImportError:
+                    import mcwiki_crawler as _wiki
+                wiki_text = _wiki.build_wiki_prompt_injections(self.all_mods, scanned_items)
+                if wiki_text:
+                    self._progress("已获取 MC百科 Wiki 数据", 12)
+            self._progress("生成丰富的任务书JSON (含支线/主线)...", 15)
+            quest_json_text = self._generate_questbook(mod_list, all_ns, item_catalog, wiki_text)
+            self._progress("解析并校验物品ID...", 80)
+            saved_dir = self._save_snbt_files(quest_json_text, scanned_items, output_dir)
+            self._progress("完成!", 100)
+            return saved_dir
+
+        # 大规模 → 分批并行
+        batches = self._split_into_batches(BATCH_SIZE)
+        self._progress(f"Mod 数量较多({total_mods})，分为{len(batches)}批并行生成...", 10)
+
+        # 在主线程预计算每批的 Prompt 数据（避免线程竞争）
+        batch_inputs = []
+        all_ns_full = self._build_all_ns()
+        for idx, batch_mods in enumerate(batches):
+            include_vanilla = (idx == 0)
+            mod_list = self._build_mod_list_for_batch(batch_mods)
+            catalog = _ms.build_item_catalog_for_prompt(scanned_items, batch_mods)
+            sp = self._get_system_prompt(include_vanilla)
+            up = (f"{mod_list}\n\n"
+                  f"=== 可用物品命名空间 ===\n{all_ns_full}\n\n"
+                  f"{catalog}\n\n"
+                  "请设计一份非常丰富的任务指南JSON。注意：\n"
+                  "- 覆盖每个Mod的完整玩法，从入门到精通\n"
+                  "- 必须包含支线任务\n"
+                  "- 严格使用上面列出的物品ID，不要编造不存在的ID\n"
+                  "- 确保每个核心Mod都至少有一章")
+            batch_inputs.append((idx, sp, up))
+
+        # 并行 API 调用
+        results = {}
+        def _call(idx_sp_up):
+            idx, sp, up = idx_sp_up
+            tok = 65536 if len(batches[idx]) > 8 else 32768
+            if self.engine == "ollama":
+                tok = min(tok, 40960)
+            return idx, self.client.chat([{"role": "system", "content": sp}, {"role": "user", "content": up}], max_tokens=tok, temperature=0.5)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(batches), 4)) as ex:
+            futs = {ex.submit(_call, inp): inp[0] for inp in batch_inputs}
+            for fut in concurrent.futures.as_completed(futs):
+                idx, text = fut.result()
+                results[idx] = text
+                self._progress(f"第{idx+1}/{len(batches)}批完成", 15 + int((len(results)) * 65 / len(batches)))
+
+        # 合并 → 第一批含原版，后续只取 Mod 章节
+        merged_text = self._merge_batch_results([results[i] for i in sorted(results)])
+
+        self._progress("解析并校验物品ID...", 80)
+        saved_dir = self._save_snbt_files(merged_text, scanned_items, output_dir)
+        self._progress("完成!", 100)
         return saved_dir
 
+    def _split_into_batches(self, size):
+        """将 prog_mods + unk 按 size 分批"""
+        all_core = list(self.prog_mods) + list(self.unk)
+        return [all_core[i:i+size] for i in range(0, len(all_core), size)]
+
+    def _build_mod_list_for_batch(self, batch_mods):
+        """构建只含这批Mod的列表文本"""
+        lines = ["=== 本批核心Mod ==="]
+        for i, m in enumerate(batch_mods, 1):
+            cat_cn = CAT_LABEL.get(m.get("category", "unknown"), m.get("category", "unknown"))
+            lines.append(f"{i}. {m['mod_name']} (modid:{m['mod_id']}, 类别:{cat_cn})")
+        return "\n".join(lines)
+
+    def _get_system_prompt(self, include_vanilla):
+        """获取 System Prompt，第二批起不含原版要求"""
+        if self.lang == "zh":
+            sp = ("你是Minecraft整合包「任务指南」设计师。为FTB Quests设计一份任务书JSON。\n\n"
+                  "【结构要求】：\n"
+                  "每个核心Mod独立设1章，每章8-15个任务。覆盖Mod从入门到精通。\n"
+                  "【支线】：每个Mod至少5-8条支线，挂接不同主线节点。\n"
+                  "【坐标】：主线 x 0→2→4... y=0，支线 y偏移±2.0。\n"
+                  "【物品ID】严格使用列出的ID。\n\n"
+                  'JSON示例: {"chapters":[{"id":"ch1","title":"Mod名","quests":[...]}]}\n'
+                  "要求: 每Mod至少1章。只输出JSON。")
+            if include_vanilla:
+                sp = ("你是Minecraft整合包「任务指南」设计师。为FTB Quests设计一份任务书JSON。\n\n"
+                      "【结构要求】：\n"
+                      "1. 原版MC: 4-6章，每章10-15个任务。开局→石器→铁器→钻石→附魔→下界→酿造→末地。\n"
+                      "2. 每个核心Mod: 1章，每章8-15个任务。从入门到精通。\n"
+                      "3. chapters数组按游戏进程排列，第一章必须是开局。\n"
+                      "【支线】：每个Mod至少5-8条支线，挂接不同主线节点。\n"
+                      "  覆盖：材料收集、工具升级、自动化、能源、探索、装饰、食物、跨Mod联动。\n"
+                      "【坐标】：主线 x 0→2→4... y=0，支线 y偏移±2.0。\n"
+                      "【物品ID】严格使用列出的ID。\n\n"
+                      'JSON示例: {"chapters":[{"id":"ch_wood","title":"原版·木石时代","quests":[...]},'
+                      '{"id":"ch_mod","title":"Mod名","quests":[...]}]}\n'
+                      "要求: 每Mod至少1章。只输出JSON。")
+        else:
+            sp = ("You are a Minecraft modpack quest guide designer. Design a questbook JSON.\n"
+                  "Each mod gets 1 chapter, 8-15 quests. Main+ branches. x 0→2→4 y=0. JSON only.")
+            if include_vanilla:
+                sp = ("You are a Minecraft modpack quest guide designer. Design a questbook JSON.\n"
+                      "1. Vanilla: 4-6 chapters. 2. Each mod: 1 chapter, 8-15 quests.\n"
+                      "Branches per mod. x 0→2→4 y=0. JSON only.")
+        return sp
+
+    def _merge_batch_results(self, json_texts):
+        """合并多批JSON：第一批保留全部，后续只取非原版章节"""
+        all_chapters = []
+        seen_titles = set()
+        for i, text in enumerate(json_texts):
+            try:
+                gen = QuestBookGenerator.__new__(QuestBookGenerator)
+                gen.client = None
+                raw = gen._extract_json(text)
+                data = json.loads(raw)
+                if not isinstance(data, dict):
+                    continue
+                for ch in data.get("chapters", []):
+                    cht = ch.get("title", "")
+                    if i > 0 and ("原版" in cht or "Vanilla" in cht or "开局" in cht or
+                                   "石器" in cht or "铁器" in cht or "钻石" in cht or
+                                   "附魔" in cht or "下界" in cht or "酿造" in cht or
+                                   "末地" in cht or "Wood" in cht or "Stone" in cht or
+                                   "Iron" in cht or "Diamond" in cht or "Nether" in cht or
+                                   "End" in cht):
+                        continue  # 第二批起跳过原版章节
+                    if cht not in seen_titles:
+                        seen_titles.add(cht)
+                        all_chapters.append(ch)
+            except Exception:
+                pass  # 解析失败跳过
+        return json.dumps({"title": "Quest Book", "chapters": all_chapters}, ensure_ascii=False)
+
     def _build_mod_list(self):
+        # 库 Mod 列表（告知 AI 不要生成）
+        lib_names = [m for m in self.all_mods if m.get("is_library")]
+        lib_warning = ""
+        if lib_names:
+            lib_warning = f"\n⚠️ 以下Mod为依赖库/前置，没有独立玩法，不需要生成任务: {', '.join(m['mod_name'] + '(' + m['mod_id'] + ')' for m in lib_names)}"
         lines = ["=== 核心Mod (有玩法/进度) ==="]
         for i,m in enumerate(self.prog_mods,1):
             cat_cn = CAT_LABEL.get(m.get("category","unknown"), m.get("category","unknown"))
-            lines.append(f"{i}. {m['mod_name']} (modid:{m['mod_id']}, 类别:{cat_cn})")
+            # 收集该Mod的附属
+            addon_names = []
+            for am in self.addon_mods:
+                if am.get("parent") == m.get("mod_id"):
+                    addon_names.append(f"{am['mod_name']}({am['mod_id']})")
+            addon_str = f"  ← 附属: {', '.join(addon_names)}" if addon_names else ""
+            lines.append(f"{i}. {m['mod_name']} (modid:{m['mod_id']}, 类别:{cat_cn}){addon_str}")
+        if self.addon_mods:
+            lines.append(f"\n  注意：以上附属Mod不需要单独开设章节，将它们的物品融入父Mod的任务中。")
         if self.util_mods:
             lines.append("\n=== 辅助Mod (工具/存储/食物) ===")
             for i,m in enumerate(self.util_mods,1):
@@ -286,6 +583,8 @@ class QuestBookGenerator:
             lines.append("\n=== 未分类Mod ===")
             for i,m in enumerate(self.unk,1):
                 lines.append(f"{i}. {m['mod_name']} (modid:{m['mod_id']})")
+        if lib_warning:
+            lines.append(lib_warning)
         return "\n".join(lines)
 
     def _build_all_ns(self):
@@ -293,54 +592,71 @@ class QuestBookGenerator:
         for m in self.all_mods: ns.add(m['mod_id'])
         return ", ".join(sorted(ns)[:50])
 
-    def _generate_questbook(self, mod_list, all_ns, item_catalog=""):
+    def _generate_questbook(self, mod_list, all_ns, item_catalog="", wiki_text=""):
         if self.lang == "zh":
             sp = (
                 "你是Minecraft整合包「任务指南」设计师。为FTB Quests设计一份非常丰富的任务书JSON。\n\n"
                 "【核心定位】：这是一份「教程指南」，帮助玩家体验每个Mod的全部玩法内容。\n"
                 "不是编故事，而是有目的性地引导玩家一步步上手。\n\n"
                 "【结构要求】：\n"
-                "1. 原版MC部分覆盖完整流程，4-6章，每章10-15个任务。\n"
+                "1. 原版MC部分覆盖完整流程，4-6章，每章10-15个任务（共约40-60个）。\n"
                 "   包含：开局→石器→铁器→钻石→附魔→下界→酿造→末地。\n"
-                "2. 每个核心Mod独立设1-2章（内容多的Mod放2章），每章10-15个任务。\n"
+                "   章节按进度顺序排列，第一章必须是开局。\n"
+                "2. 每个核心Mod独立设1章，每章8-15个任务。\n"
                 "   覆盖Mod从入门到精通的所有内容。\n"
+                "   Mod章节按「先科技后魔法」的顺序排列。\n"
+                "   不得省略任何已列出的核心Mod —— 每个Mod都必须有至少1章。\n"
                 "3. 辅助Mod在奖励中引用其物品，不做单独大量章节。\n"
-                "4. 总任务数目标：70-120个任务。\n\n"
-                "【支线与主线设计】：\n"
-                "- 主线：必须有dependencies链，玩家按顺序完成。主线任务之间必须用dependencies逐级链接。\n"
-                "- 支线：必须依赖主线中的某个节点（用dependencies引用主线任务ID），不能完全独立浮动。\n"
-                "- 每个章节至少有2-3条支线任务，每条支线挂接到不同的主线节点上。\n"
-                "- 支线任务是主线的补充（如：主线让你做基础机器，支线让你升级机器）。\n\n"
+                "4. chapters数组中的章节顺序 = 游戏内任务书的显示顺序，必须按游戏进程排列。\n"
+                "5. 总任务数灵活调整，确保每个Mod都被覆盖到，不要因为总任务数上限而砍Mod。\n\n"
+                "【支线与主线设计（极其重要）】：\n"
+                "- 主线：必须有dependencies链，玩家按顺序完成。覆盖Mod最核心的玩法流程。\n"
+                "- 支线：必须大量设计！每个核心Mod至少5-8条支线任务，每条挂接不同主线节点。\n"
+                "- 支线覆盖以下维度（每个维度至少1条）：\n"
+                "  ① 材料收集（如：收集XX矿石、种植XX作物）\n"
+                "  ② 工具升级（如：制作更强的镐/剑/装备）\n"
+                "  ③ 自动化（如：搭建自动农场、自动采矿机）\n"
+                "  ④ 能源系统（如：搭建发电机、储能设备）\n"
+                "  ⑤ 探索/战斗（如：击败特定怪物、探索特定结构）\n"
+                "  ⑥ 装饰/建筑（如：制作装饰方块、建造特定结构）\n"
+                "  ⑦ 食物/酿造（如：制作高级食物、酿造药水）\n"
+                "  ⑧ 跨Mod联动（如：用ModA的能源驱动ModB的机器）\n"
+                "- 支线任务是主线的补充，引导玩家体验Mod的全部内容。\n\n"
                 "【坐标布局（非常重要）】：\n"
                 "- 主线任务：x从0开始，依次递增2.0（如 0, 2, 4, 6, 8...），y统一为0。\n"
                 "- 支线任务：x与所挂接的主线任务相同，y偏移±2.0（上方或下方）。\n"
-                "- 第二条支线挂到下一个主线节点，y偏移±2.0。\n"
+                "- 每条支线的y值错开（如第一条支线 y=-2.0，第二条 y=2.0，第三条 y=-4.0）。\n"
                 "- 每个任务必须提供x和y坐标。\n\n"
                 "【任务设计规范】：\n"
                 "- 每个任务: title, subtitle(玩法提示), tasks(目标), rewards(奖励)\n"
                 "- 任务类型: item(收集/合成), advancement(进度), kill, dimension, checkmark(仅信息类)\n"
                 "- 物品ID只能用minecraft:或上述已安装Mod的命名空间\n"
-                "- 奖励按阶段合理分配\n\n"
-                "JSON示例(含主线+支线):\n"
+                "- 奖励按阶段合理分配\n"
+                "- ⚠️ 不需要写 icon 字段，程序会自动赋值图标\n\n"
+                "JSON示例(含大量支线):\n"
                 '{"title":"整合包指南","chapters":[\n'
-                '{"id":"ch_wood","title":"原版·木石时代","icon":"minecraft:wooden_pickaxe","quests":[\n'
-                '{"id":"q_log","title":"获得原木","subtitle":"空手撸树获得原木","icon":"minecraft:oak_log","tasks":[{"type":"item","target":"minecraft:oak_log","count":16}],"rewards":[{"type":"item","target":"minecraft:apple","count":4}],"shape":"square","x":0.0,"y":0.0},\n'
-                '{"id":"q_table","title":"制作工作台","subtitle":"用4个木板合成","dependencies":["q_log"],"icon":"minecraft:crafting_table","tasks":[{"type":"item","target":"minecraft:crafting_table","count":1}],"rewards":[{"type":"xp","count":10}],"shape":"square","x":2.0,"y":0.0},\n'
-                '{"id":"q_stone","title":"石器工具","subtitle":"圆石→石镐/石斧/石锹","dependencies":["q_table"],"icon":"minecraft:stone_pickaxe","tasks":[{"type":"item","target":"minecraft:stone_pickaxe","count":1}],"rewards":[{"type":"xp","count":20}],"shape":"square","x":4.0,"y":0.0},\n'
-                '{"id":"q_furnace","title":"制作熔炉","subtitle":"8个圆石合成熔炉","dependencies":["q_stone"],"icon":"minecraft:furnace","tasks":[{"type":"item","target":"minecraft:furnace","count":1}],"rewards":[{"type":"xp","count":15}],"shape":"square","x":6.0,"y":0.0},\n'
-                '{"id":"q_branch_food","title":"支线·解决食物","subtitle":"击杀动物获取食物","dependencies":["q_table"],"icon":"minecraft:cooked_beef","tasks":[{"type":"item","target":"minecraft:cooked_beef","count":8}],"rewards":[{"type":"xp","count":15}],"shape":"diamond","x":2.0,"y":-2.0}\n'
+                '{"id":"ch_wood","title":"原版·木石时代","quests":[\n'
+                '{"id":"q_log","title":"主线·获得原木","subtitle":"空手撸树获得原木","tasks":[{"type":"item","target":"minecraft:oak_log","count":16}],"rewards":[{"type":"item","target":"minecraft:apple","count":4}],"shape":"square","x":0.0,"y":0.0},\n'
+                '{"id":"q_table","title":"主线·制作工作台","subtitle":"用4个木板合成工作台","dependencies":["q_log"],"tasks":[{"type":"item","target":"minecraft:crafting_table","count":1}],"rewards":[{"type":"xp","count":10}],"shape":"square","x":2.0,"y":0.0},\n'
+                '{"id":"q_pickaxe","title":"主线·石器工具","subtitle":"制作石镐开始挖矿","dependencies":["q_table"],"tasks":[{"type":"item","target":"minecraft:stone_pickaxe","count":1}],"rewards":[{"type":"xp","count":20}],"shape":"square","x":4.0,"y":0.0},\n'
+                '{"id":"q_furnace","title":"主线·制作熔炉","subtitle":"8个圆石合成熔炉开始烧矿","dependencies":["q_pickaxe"],"tasks":[{"type":"item","target":"minecraft:furnace","count":1}],"rewards":[{"type":"xp","count":15}],"shape":"square","x":6.0,"y":0.0},\n'
+                '{"id":"q_branch_food","title":"支线·解决食物","subtitle":"击杀动物获取食物","dependencies":["q_table"],"tasks":[{"type":"item","target":"minecraft:cooked_beef","count":8}],"rewards":[{"type":"item","target":"minecraft:bread","count":4}],"shape":"diamond","x":2.0,"y":-2.0},\n'
+                '{"id":"q_branch_cave","title":"支线·探索洞穴","subtitle":"寻找天然洞穴获取资源","dependencies":["q_pickaxe"],"tasks":[{"type":"item","target":"minecraft:torch","count":32}],"rewards":[{"type":"item","target":"minecraft:iron_ingot","count":3}],"shape":"diamond","x":4.0,"y":-2.0},\n'
+                '{"id":"q_branch_shelter","title":"支线·建造小屋","subtitle":"搭建基础庇护所","dependencies":["q_log"],"tasks":[{"type":"item","target":"minecraft:oak_planks","count":64}],"rewards":[{"type":"xp","count":10}],"shape":"circle","x":0.0,"y":2.0}\n'
                 ']}\n]}\n\n'
-                "要求: 70-120总任务。所有title/subtitle用中文。每个任务必须有dependencies（除第一个外）。只输出JSON。"
+                "要求: 总任务数按Mod数量灵活调整。所有title/subtitle用中文。每个主线任务至少有2-3条支线挂接。不需要写icon字段。只输出JSON。"
             )
+            wiki_block = f"{wiki_text}\n\n" if wiki_text else ""
             up = (
                 f"{mod_list}\n\n"
+                f"{wiki_block}"
                 f"=== 可用物品命名空间 ===\n{all_ns}\n\n"
                 f"{item_catalog}\n\n"
                 "请设计一份非常丰富的任务指南JSON。注意：\n"
                 "- 覆盖每个Mod的完整玩法，从入门到精通\n"
                 "- 必须包含支线任务（无dependencies的独立任务）\n"
-                "- 总任务数70-120\n"
                 "- 严格使用上面列出的物品ID，不要编造不存在的ID\n"
+                "- 确保每个核心Mod都至少有一章\n"
                 "- 告诉玩家每一步做什么、用什么做、做完得到什么"
             )
         else:
@@ -367,7 +683,16 @@ class QuestBookGenerator:
                 "Design a very rich questbook JSON with branches and main lines. "
                 "Use ONLY the item IDs listed above."
             )
-        max_tok = 40960 if self.engine == "ollama" else 32768
+        # 输出token上限根据Mod数量动态调整
+        mod_count = len(self.prog_mods) + len(self.unk)
+        if mod_count <= 10:
+            max_tok = 32768
+        elif mod_count <= 30:
+            max_tok = 65536
+        else:
+            max_tok = 131072
+        if self.engine == "ollama":
+            max_tok = min(max_tok, 40960)  # Ollama本地模型限制
         return self.client.chat([{"role":"system","content":sp},{"role":"user","content":up}], max_tokens=max_tok, temperature=0.5)
 
     def _save_snbt_files(self, quest_json_text, scanned_items=None, output_dir=None):
@@ -396,29 +721,31 @@ class QuestBookGenerator:
                     idx = json_text.rfind('\n    }\n')
                     if idx>0: json_text = json_text[:idx]+'\n  ]\n}'
         if ai_data is None:
-            with open(os.path.join(base_dir,"parse_error.txt"),"w",encoding="utf-8") as f:f.write("=== Raw ===\n"+json_text)
-            raise Exception("AI返回无效JSON。请检查 parse_error.txt")
+            with open(os.path.join(base_dir,"parse_error.txt"),"w",encoding="utf-8") as f:
+                f.write(f"=== AI原始返回内容 ===\n{quest_json_text}\n\n=== 提取后的JSON ===\n{json_text}")
+            raise Exception(f"AI返回了无效JSON（已写入 parse_error.txt 的前 {min(len(quest_json_text), 200)} 字符）。请将AI返回的完整内容复制到导入模式中重试。")
 
-        # 校验物品ID
+        # 自动修正物品ID
         if scanned_items:
-            valid_count, invalid_list = _ms.validate_item_ids(ai_data, scanned_items)
+            ai_data, fix_count, unfixable = _ms.auto_fix_item_ids(ai_data, scanned_items)
             # 写入校验报告
             report_lines = [
-                "=== 物品ID校验报告 ===",
-                f"有效物品ID: {valid_count}",
-                f"无效/未验证物品ID: {len(invalid_list)}",
+                "=== 物品ID自动修正报告 ===",
+                f"成功修正: {fix_count} 个物品ID",
+                f"无法修正: {len(unfixable)} 个物品ID",
             ]
-            if invalid_list:
-                report_lines.append("\n--- 无效物品ID详情 ---")
-                for item in invalid_list:
+            if unfixable:
+                report_lines.append("\n--- 无法修正的物品ID ---")
+                for item in unfixable:
                     report_lines.append(f"  {item['id']} — {item['location']}")
-                    report_lines.append(f"    建议: {item['suggestion']}")
+                    report_lines.append(f"    原因: {item['reason']}")
+                report_lines.append("\n  建议: 手动在SNBT文件中替换为正确的物品ID")
             else:
-                report_lines.append("\n所有物品ID均已通过校验 ✓")
+                report_lines.append("\n所有物品ID均已通过自动修正 ✓" if fix_count else "\n所有物品ID均已通过校验 ✓")
             report_path = os.path.join(base_dir, "id_validation_report.txt")
             with open(report_path, "w", encoding="utf-8") as f:
                 f.write("\n".join(report_lines))
-            print(f"[VALIDATION] {valid_count} valid, {len(invalid_list)} invalid — report saved")
+            print(f"[VALIDATION] {fix_count} fixed, {len(unfixable)} unfixable — report saved")
 
         return self._write_snbt_files(base_dir, ai_data)
 
@@ -435,7 +762,8 @@ class QuestBookGenerator:
         for chi, ch in enumerate(chapters_data):
             chu = _uid().upper()
             cht = ch.get("title",f"Chapter {chi+1}")
-            chi_icon = ch.get("icon","minecraft:book")
+            # 章节图标：优先 AI 写的，否则用第一个 quest 的图标，再否则用原版 pickaxe
+            chi_icon = ch.get("icon") or ""
             qents = []
             for qi, q in enumerate(ch.get("quests",[])):
                 rid = q.get("id",f"q_{chi}_{qi}")
@@ -443,17 +771,18 @@ class QuestBookGenerator:
                 if not qu: continue
                 qt = q.get("title",f"Quest {qi+1}")
                 qs = q.get("subtitle","")
-                qi_icon = q.get("icon","minecraft:book")
                 qde = q.get("description",[])
                 if isinstance(qde,str): qde = [qde]
                 tasks = []
                 for t in q.get("tasks",[]):
                     tid = _uid().upper(); tt = t.get("type","checkmark")
-                    tg = t.get("target",""); cnt = int(t.get("count",1))
+                    tg = t.get("target") or t.get("item", ""); cnt = int(t.get("count",1))
                     to = {"id":tid,"type":tt}
                     if tt == "item":
-                        # Real FTBQ uses flat string "mod:id" for simple items
-                        to["item"] = _fx(tg)
+                        item_id = _fx(tg)
+                        if not item_id or ":" not in item_id:
+                            continue
+                        to["item"] = item_id
                     elif tt == "advancement":
                         to["advancement"] = tg or "minecraft:story/root"
                         to["criterion"] = ""
@@ -467,10 +796,13 @@ class QuestBookGenerator:
                 rewards = []
                 for r in q.get("rewards",[]):
                     ri = _uid().upper(); rt = r.get("type","item")
-                    rg = r.get("target",""); cnt = int(r.get("count",1))
+                    rg = r.get("target") or r.get("item", ""); cnt = int(r.get("count",1))
                     ro = {"id":ri,"type":rt}
                     if rt == "item":
-                        ro["item"] = _fx(rg)
+                        item_id = _fx(rg)
+                        if not item_id or ":" not in item_id:
+                            continue
+                        ro["item"] = item_id
                         if cnt != 1: ro["count"] = cnt
                     elif rt == "command": ro["command"] = rg or "/say Hello"
                     elif rt == "xp": ro["xp_amount"] = cnt
@@ -507,6 +839,15 @@ class QuestBookGenerator:
                     else:
                         xv = _D(round(qi * 2.0, 1))
                         yv = _D(0.0)
+                # 任务图标：优先 AI 写的（如果碰巧写了），否则用第一个 item task 的 target
+                qi_icon = q.get("icon") or ""
+                if not qi_icon or ":" not in qi_icon:
+                    for _t in tasks:
+                        if _t.get("type") == "item":
+                            qi_icon = _t.get("item", "")
+                            break
+                if not qi_icon or ":" not in qi_icon:
+                    qi_icon = "minecraft:book"
                 qo = {"id":qu,"title":qt,"icon":qi_icon,"x":xv,"y":yv,"shape":sh,"dependencies":du,"tasks":tasks,"rewards":rewards}
                 if qs: qo["subtitle"] = qs
                 if qde: qo["description"] = qde
@@ -517,8 +858,46 @@ class QuestBookGenerator:
                 "group":chu,"icon":chi_icon,"id":chu,"order_index":chi,
                 "quest_links":[],"quests":qents,"title":cht,
             }
+            # 章节图标回退
+            if not chi_icon or ":" not in chi_icon:
+                for _q in qents:
+                    qi = _q.get("icon", "")
+                    if qi and ":" in qi:
+                        chi_icon = qi
+                        break
+            if not chi_icon or ":" not in chi_icon:
+                chi_icon = "minecraft:wooden_pickaxe"
+            cho["icon"] = chi_icon
             with open(os.path.join(chapters_dir,f"{chu}.snbt"),"w",encoding="utf-8") as f:f.write(to_snbt(cho))
             chapter_groups.append({"id":chu,"title":cht})
+        # 追加标记章节，提示玩家此为自动生成
+        mark_chu = "ZZZZZZZZZZZZZZZZ"  # 固定ID，方便定位
+        mark_cho = {
+            "default_hide_dependency_lines": False,
+            "default_quest_shape": "",
+            "filename": mark_chu,
+            "group": mark_chu,
+            "icon": "minecraft:writable_book",
+            "id": mark_chu,
+            "order_index": len(chapter_groups),
+            "quest_links": [],
+            "quests": [{
+                "id": "ZZZZZZZZZZZZZZZ0",
+                "title": "【生成完毕，右下角打开编辑模式删除本行】",
+                "subtitle": "此章节为 AutoFTBQ 自动生成标记，可安全删除",
+                "icon": "minecraft:writable_book",
+                "x": _D(0.0),
+                "y": _D(0.0),
+                "shape": "square",
+                "tasks": [{"id": "ZZZZZZZZZZZZZZZ1", "type": "checkmark"}],
+                "dependencies": [],
+                "rewards": [],
+            }],
+            "title": "【生成完毕，右下角打开编辑模式删除】",
+        }
+        with open(os.path.join(chapters_dir, f"{mark_chu}.snbt"), "w", encoding="utf-8") as f:
+            f.write(to_snbt(mark_cho))
+        chapter_groups.append({"id": mark_chu, "title": "【生成完毕，右下角打开编辑模式删除】"})
         with open(os.path.join(base_dir,"chapter_groups.snbt"),"w",encoding="utf-8") as f:f.write(to_snbt({"chapter_groups":chapter_groups}))
         ds = {
             "default_autoclaim_rewards":"disabled","default_consume_items":False,
@@ -548,7 +927,7 @@ class QuestBookGenerator:
                    raw.rfind('\n    ]\n'), raw.rfind('}\n'), raw.rfind(']\n')]:
             if p > last_good:
                 last_good = p
-        if last_good > len(raw) * 0.7:  # 只在大部完整时才截断修复
+        if last_good > len(raw) * 0.5:  # 过半完整即尝试修复
             raw = raw[:last_good+1]  # 保留那个 }
             # 补上缺失的闭合
             d = sum(1 for c in raw if c == '{') - sum(1 for c in raw if c == '}')
@@ -584,21 +963,24 @@ def _build_quest_links(qents):
     return links
 
 def _fx(raw):
-    if not raw: return "minecraft:stone"
+    if not raw or not str(raw).strip():
+        return ""
     raw = str(raw).strip()
     return raw if ":" in raw else f"minecraft:{raw}"
 def _uid(): return uuid.uuid4().hex[:16]
 
 def generate_quest_book(api_key=None, selected_mods=None, mod_folder=None,
                          progress_callback=None, lang="zh", engine="deepseek",
-                         ollama_model=None, output_dir=None):
+                         ollama_model=None, output_dir=None, use_wiki=False):
     if progress_callback: progress_callback("分析选中的Mod...",3)
     if not selected_mods: raise Exception("未选中任何Mod。")
-    return QuestBookGenerator(
+    gen = QuestBookGenerator(
         api_key=api_key, selected_mods=selected_mods, mod_folder=mod_folder,
         progress_callback=progress_callback, lang=lang, engine=engine,
         ollama_model=ollama_model
-    ).generate(output_dir=output_dir)
+    )
+    gen.use_wiki = use_wiki
+    return gen.generate(output_dir=output_dir)
 
 
 def build_full_prompt(selected_mods, mod_folder=None, lang="zh"):

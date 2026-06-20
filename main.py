@@ -10,7 +10,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
-APP_NAME = "AutoFTBQ"; VERSION = "1.2.0"; AUTHOR = "Taki"
+APP_NAME = "AutoFTBQ"; VERSION = "1.2.5"; AUTHOR = "Taki"
 CONFIG_PATH = os.path.join(SCRIPT_DIR, "config.json")
 
 AI_AVAILABLE = False; AI_IMPORT_ERROR = ""
@@ -192,7 +192,7 @@ class ModeSelectDialog(tk.Toplevel):
     def __init__(self, parent):
         super().__init__(parent)
         self.title(f"{APP_NAME} — 选择工作模式")
-        self.geometry("500x340")
+        self.geometry("540x520")
         self.resizable(False, False)
         self.configure(bg="#ffffff")
         self.result = None  # "api" or "import"
@@ -230,7 +230,11 @@ class ModeSelectDialog(tk.Toplevel):
                      fg="#1a1a1a", bg="#f5fff5").pack(anchor=tk.W)
             tk.Label(card2, text="保存「提示词+物品ID」文件 → 上传至网页 AI → "
                      "粘贴返回的 JSON → 自动校验并转为 SNBT",
-                     font=df, fg="#666666", bg="#f5fff5", wraplength=400, justify=tk.LEFT).pack(anchor=tk.W, pady=(4, 6))
+                     font=df, fg="#666666", bg="#f5fff5", wraplength=400, justify=tk.LEFT).pack(anchor=tk.W, pady=(4, 4))
+            tk.Label(card2, text="⚠ 仅建议Mod数量较少（100以内）的整合包使用此模式，"
+                     "否则可能导致生成内容缺失",
+                     font=("Microsoft YaHei", 8), fg="#e65100", bg="#f5fff5",
+                     wraplength=400, justify=tk.LEFT).pack(anchor=tk.W, pady=(0, 6))
             tk.Button(card2, text="选择导入模式 →", font=("Microsoft YaHei", 10, "bold"),
                       command=lambda: self._select("import"), bg="#4caf50", fg="#ffffff",
                       bd=0, relief=tk.FLAT, cursor="hand2", padx=20, pady=6).pack(anchor=tk.W)
@@ -246,7 +250,8 @@ class ModeSelectDialog(tk.Toplevel):
             w, h = self.winfo_width(), self.winfo_height()
             self.geometry(f"{w}x{h}+{px+(pw-w)//2}+{py+(ph-h)//2}")
         except Exception as e:
-            messagebox.showerror("错误", f"无法创建模式选择窗口: {e}")
+            import traceback
+            traceback.print_exc()
             self.result = "api"
             self.destroy()
 
@@ -265,7 +270,7 @@ class App:
         self.root.title(f"{APP_NAME} v{VERSION} - {AUTHOR}")
 
         # 先给 root 一个合理尺寸，让弹窗能正常居中
-        self.root.geometry("500x400")
+        self.root.geometry("540x520")
         self.root.update_idletasks()
 
         # 启动即询问模式
@@ -286,6 +291,7 @@ class App:
         self.engine_var = tk.StringVar(value=self.config.get("engine", "deepseek"))
         self.ollama_model_var = tk.StringVar(value=self.config.get("ollama_model", ""))
         self.output_dir_var = tk.StringVar(value=self.config.get("output_dir", ""))
+        self.use_wiki_var = tk.BooleanVar(value=self.config.get("use_wiki", False))
         self.generating = False
         self.selected_mods = []
         self._detected_mods = []
@@ -513,6 +519,15 @@ class App:
         self.engine_ollama_btn.pack(side=tk.LEFT, padx=(0, 5))
         self.ollama_status_label = tk.Label(self.engine_frame, text="", font=("Microsoft YaHei", 9), fg="#888888", bg="#ffffff")
         self.ollama_status_label.pack(side=tk.LEFT, padx=(12, 0))
+
+        # ── Wiki 增强复选框 ──
+        wiki_row = tk.Frame(mf, bg="#ffffff")
+        wiki_row.pack(fill=tk.X, pady=(0, 6))
+        self.use_wiki_check = tk.Checkbutton(wiki_row, text="使用 MC百科 Wiki 数据增强（需要网络）",
+                                              variable=self.use_wiki_var, font=("Microsoft YaHei", 9),
+                                              fg="#666666", bg="#ffffff", activebackground="#ffffff",
+                                              selectcolor="#ffffff", command=self._save_config)
+        self.use_wiki_check.pack(side=tk.LEFT)
 
         ttk.Separator(mf, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(0, 15))
 
@@ -828,16 +843,18 @@ class App:
             api_key if engine == "deepseek" else None,
             list(self.selected_mods), LANG, engine,
             self.ollama_model_var.get().strip(),
-            self.output_dir_var.get().strip() or None
+            self.output_dir_var.get().strip() or None,
+            bool(self.use_wiki_var.get()),
         ), daemon=True).start()
 
-    def _generate_thread(self, api_key, selected_mods, lang, engine, ollama_model, output_dir):
+    def _generate_thread(self, api_key, selected_mods, lang, engine, ollama_model, output_dir, use_wiki=False):
         try:
             mf = self.mod_folder_var.get().strip()
             out = generate_quest_book(
                 api_key=api_key, selected_mods=selected_mods,
                 mod_folder=mf, progress_callback=self._on_progress,
-                lang=lang, engine=engine, ollama_model=ollama_model, output_dir=output_dir
+                lang=lang, engine=engine, ollama_model=ollama_model, output_dir=output_dir,
+                use_wiki=use_wiki
             )
             self.root.after(0, self._on_done, out)
         except Exception as e: self.root.after(0, self._on_fail, str(e))
