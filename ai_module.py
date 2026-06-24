@@ -3,7 +3,6 @@
 """AutoFTBQ AI模块 — FTB Quests SNBT生成 v4"""
 
 import os, re, json, uuid, time
-import concurrent.futures
 import requests
 
 try:
@@ -408,154 +407,30 @@ class QuestBookGenerator:
         self.addon_mods = [m for m in self.addon_mods if not m.get("is_library")]
         self.unk = [m for m in self.unk if not m.get("is_library")]
 
-        total_mods = len(self.prog_mods) + len(self.unk)
-        BATCH_SIZE = 12  # 每批最多处理12个Mod
-
-        if total_mods <= BATCH_SIZE or not self.client or self.engine == "dummy":
-            # 小规模 → 单次调用
-            mod_list = self._build_mod_list()
-            all_ns = self._build_all_ns()
-            item_catalog = _ms.build_item_catalog_for_prompt(scanned_items, self.all_mods)
-            # 构造合成链提示
-            recipe_hints = _ms.build_recipe_chain_hints(self.all_mods, max_chains_per_mod=5)
-            if recipe_hints:
-                item_catalog = recipe_hints + "\n\n" + item_catalog
-            # 注入 Wiki 数据
-            wiki_text = ""
-            if getattr(self, "use_wiki", False):
-                try:
-                    from . import mcwiki_crawler as _wiki
-                except ImportError:
-                    import mcwiki_crawler as _wiki
-                wiki_text = _wiki.build_wiki_prompt_injections(self.all_mods, scanned_items)
-                if wiki_text:
-                    self._progress("已获取 MC百科 Wiki 数据", 12)
-            self._progress("生成丰富的任务书JSON (含支线/主线)...", 15)
-            quest_json_text = self._generate_questbook(mod_list, all_ns, item_catalog, wiki_text)
-            self._progress("解析并校验物品ID...", 80)
-            saved_dir = self._save_snbt_files(quest_json_text, scanned_items, output_dir)
-            self._progress("完成!", 100)
-            return saved_dir
-
-        # 大规模 → 分批并行
-        batches = self._split_into_batches(BATCH_SIZE)
-        self._progress(f"Mod 数量较多({total_mods})，分为{len(batches)}批并行生成...", 10)
-
-        # 在主线程预计算每批的 Prompt 数据（避免线程竞争）
-        batch_inputs = []
-        all_ns_full = self._build_all_ns()
-        for idx, batch_mods in enumerate(batches):
-            include_vanilla = (idx == 0)
-            mod_list = self._build_mod_list_for_batch(batch_mods)
-            catalog = _ms.build_item_catalog_for_prompt(scanned_items, batch_mods)
-            sp = self._get_system_prompt(include_vanilla)
-            up = (f"{mod_list}\n\n"
-                  f"=== 可用物品命名空间 ===\n{all_ns_full}\n\n"
-                  f"{catalog}\n\n"
-                  "请设计一份非常丰富的任务指南JSON。注意：\n"
-                  "- 覆盖每个Mod的完整玩法，从入门到精通\n"
-                  "- 必须包含支线任务\n"
-                  "- 严格使用上面列出的物品ID，不要编造不存在的ID\n"
-                  "- 确保每个核心Mod都至少有一章")
-            batch_inputs.append((idx, sp, up))
-
-        # 并行 API 调用
-        results = {}
-        def _call(idx_sp_up):
-            idx, sp, up = idx_sp_up
-            tok = 65536 if len(batches[idx]) > 8 else 32768
-            if self.engine == "ollama":
-                tok = min(tok, 40960)
-            return idx, self.client.chat([{"role": "system", "content": sp}, {"role": "user", "content": up}], max_tokens=tok, temperature=0.5)
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(batches), 4)) as ex:
-            futs = {ex.submit(_call, inp): inp[0] for inp in batch_inputs}
-            for fut in concurrent.futures.as_completed(futs):
-                idx, text = fut.result()
-                results[idx] = text
-                self._progress(f"第{idx+1}/{len(batches)}批完成", 15 + int((len(results)) * 65 / len(batches)))
-
-        # 合并 → 第一批含原版，后续只取 Mod 章节
-        merged_text = self._merge_batch_results([results[i] for i in sorted(results)])
-
+        # 统一单次调用（所有 Mod 完整 Prompt）
+        mod_list = self._build_mod_list()
+        all_ns = self._build_all_ns()
+        item_catalog = _ms.build_item_catalog_for_prompt(scanned_items, self.all_mods)
+        # 构造合成链提示
+        recipe_hints = _ms.build_recipe_chain_hints(self.all_mods, max_chains_per_mod=5)
+        if recipe_hints:
+            item_catalog = recipe_hints + "\n\n" + item_catalog
+        # 注入 Wiki 数据
+        wiki_text = ""
+        if getattr(self, "use_wiki", False):
+            try:
+                from . import mcwiki_crawler as _wiki
+            except ImportError:
+                import mcwiki_crawler as _wiki
+            wiki_text = _wiki.build_wiki_prompt_injections(self.all_mods, scanned_items)
+            if wiki_text:
+                self._progress("已获取 MC百科 Wiki 数据", 12)
+        self._progress("生成丰富的任务书JSON (含支线/主线)...", 15)
+        quest_json_text = self._generate_questbook(mod_list, all_ns, item_catalog, wiki_text)
         self._progress("解析并校验物品ID...", 80)
-        saved_dir = self._save_snbt_files(merged_text, scanned_items, output_dir)
+        saved_dir = self._save_snbt_files(quest_json_text, scanned_items, output_dir)
         self._progress("完成!", 100)
         return saved_dir
-
-    def _split_into_batches(self, size):
-        """将 prog_mods + unk 按 size 分批"""
-        all_core = list(self.prog_mods) + list(self.unk)
-        return [all_core[i:i+size] for i in range(0, len(all_core), size)]
-
-    def _build_mod_list_for_batch(self, batch_mods):
-        """构建只含这批Mod的列表文本"""
-        lines = ["=== 本批核心Mod ==="]
-        for i, m in enumerate(batch_mods, 1):
-            cat_cn = CAT_LABEL.get(m.get("category", "unknown"), m.get("category", "unknown"))
-            lines.append(f"{i}. {m['mod_name']} (modid:{m['mod_id']}, 类别:{cat_cn})")
-        return "\n".join(lines)
-
-    def _get_system_prompt(self, include_vanilla):
-        """获取 System Prompt，第二批起不含原版要求"""
-        if self.lang == "zh":
-            sp = ("你是Minecraft整合包「任务指南」设计师。为FTB Quests设计一份任务书JSON。\n\n"
-                  "【结构要求】：\n"
-                  "每个核心Mod独立设1章，每章8-15个任务。覆盖Mod从入门到精通。\n"
-                  "【支线】：每个Mod至少5-8条支线，挂接不同主线节点。\n"
-                  "【坐标】：主线 x 0→2→4... y=0，支线 y偏移±2.0。\n"
-                  "【物品ID】严格使用列出的ID。\n\n"
-                  'JSON示例: {"chapters":[{"id":"ch1","title":"Mod名","quests":[...]}]}\n'
-                  "要求: 每Mod至少1章。只输出JSON。")
-            if include_vanilla:
-                sp = ("你是Minecraft整合包「任务指南」设计师。为FTB Quests设计一份任务书JSON。\n\n"
-                      "【结构要求】：\n"
-                      "1. 原版MC: 4-6章，每章10-15个任务。开局→石器→铁器→钻石→附魔→下界→酿造→末地。\n"
-                      "2. 每个核心Mod: 1章，每章8-15个任务。从入门到精通。\n"
-                      "3. chapters数组按游戏进程排列，第一章必须是开局。\n"
-                      "【支线】：每个Mod至少5-8条支线，挂接不同主线节点。\n"
-                      "  覆盖：材料收集、工具升级、自动化、能源、探索、装饰、食物、跨Mod联动。\n"
-                      "【坐标】：主线 x 0→2→4... y=0，支线 y偏移±2.0。\n"
-                      "【物品ID】严格使用列出的ID。\n\n"
-                      'JSON示例: {"chapters":[{"id":"ch_wood","title":"原版·木石时代","quests":[...]},'
-                      '{"id":"ch_mod","title":"Mod名","quests":[...]}]}\n'
-                      "要求: 每Mod至少1章。只输出JSON。")
-        else:
-            sp = ("You are a Minecraft modpack quest guide designer. Design a questbook JSON.\n"
-                  "Each mod gets 1 chapter, 8-15 quests. Main+ branches. x 0→2→4 y=0. JSON only.")
-            if include_vanilla:
-                sp = ("You are a Minecraft modpack quest guide designer. Design a questbook JSON.\n"
-                      "1. Vanilla: 4-6 chapters. 2. Each mod: 1 chapter, 8-15 quests.\n"
-                      "Branches per mod. x 0→2→4 y=0. JSON only.")
-        return sp
-
-    def _merge_batch_results(self, json_texts):
-        """合并多批JSON：第一批保留全部，后续只取非原版章节"""
-        all_chapters = []
-        seen_titles = set()
-        for i, text in enumerate(json_texts):
-            try:
-                gen = QuestBookGenerator.__new__(QuestBookGenerator)
-                gen.client = None
-                raw = gen._extract_json(text)
-                data = json.loads(raw)
-                if not isinstance(data, dict):
-                    continue
-                for ch in data.get("chapters", []):
-                    cht = ch.get("title", "")
-                    if i > 0 and ("原版" in cht or "Vanilla" in cht or "开局" in cht or
-                                   "石器" in cht or "铁器" in cht or "钻石" in cht or
-                                   "附魔" in cht or "下界" in cht or "酿造" in cht or
-                                   "末地" in cht or "Wood" in cht or "Stone" in cht or
-                                   "Iron" in cht or "Diamond" in cht or "Nether" in cht or
-                                   "End" in cht):
-                        continue  # 第二批起跳过原版章节
-                    if cht not in seen_titles:
-                        seen_titles.add(cht)
-                        all_chapters.append(ch)
-            except Exception:
-                pass  # 解析失败跳过
-        return json.dumps({"title": "Quest Book", "chapters": all_chapters}, ensure_ascii=False)
 
     def _build_mod_list(self):
         # 库 Mod 列表（告知 AI 不要生成）
@@ -775,7 +650,11 @@ class QuestBookGenerator:
                 if isinstance(qde,str): qde = [qde]
                 tasks = []
                 for t in q.get("tasks",[]):
-                    tid = _uid().upper(); tt = t.get("type","checkmark")
+                    if not isinstance(t, dict):
+                        continue
+                    tid = _uid().upper()
+                    tt_raw = str(t.get("type","checkmark")).lower()
+                    tt = tt_raw.split(":", 1)[-1]  # "minecraft:item" → "item"
                     tg = t.get("target") or t.get("item", ""); cnt = int(t.get("count",1))
                     to = {"id":tid,"type":tt}
                     if tt == "item":
@@ -795,7 +674,11 @@ class QuestBookGenerator:
                 if not tasks: tasks.append({"id":_uid().upper(),"type":"checkmark","value":1})
                 rewards = []
                 for r in q.get("rewards",[]):
-                    ri = _uid().upper(); rt = r.get("type","item")
+                    if not isinstance(r, dict):
+                        continue
+                    ri = _uid().upper()
+                    rt_raw = str(r.get("type","item")).lower()
+                    rt = rt_raw.split(":", 1)[-1]
                     rg = r.get("target") or r.get("item", ""); cnt = int(r.get("count",1))
                     ro = {"id":ri,"type":rt}
                     if rt == "item":
@@ -842,10 +725,17 @@ class QuestBookGenerator:
                 # 任务图标：优先 AI 写的（如果碰巧写了），否则用第一个 item task 的 target
                 qi_icon = q.get("icon") or ""
                 if not qi_icon or ":" not in qi_icon:
-                    for _t in tasks:
-                        if _t.get("type") == "item":
-                            qi_icon = _t.get("item", "")
-                            break
+                    tasks_for_icon = q.get("tasks", [])
+                    for ti in tasks_for_icon:
+                        if not isinstance(ti, dict):
+                            continue
+                        tt_raw = str(ti.get("type", "")).lower()
+                        tt_norm = tt_raw.split(":", 1)[-1]
+                        if tt_norm in ("item", "kill"):
+                            cand = ti.get("target") or ti.get("item", "")
+                            if cand and ":" in cand:
+                                qi_icon = cand
+                                break
                 if not qi_icon or ":" not in qi_icon:
                     qi_icon = "minecraft:book"
                 qo = {"id":qu,"title":qt,"icon":qi_icon,"x":xv,"y":yv,"shape":sh,"dependencies":du,"tasks":tasks,"rewards":rewards}

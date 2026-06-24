@@ -3,7 +3,7 @@
 ![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)
 ![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey.svg)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
-![Version](https://img.shields.io/badge/Version-1.2.5-orange.svg)
+![Version](https://img.shields.io/badge/Version-1.2.6-orange.svg)
 
 基于 AI 自动生成 Minecraft [FTB Quests](https://www.curseforge.com/minecraft/mc-mods/ftb-quests-forge) 任务书的桌面工具。
 

@@ -10,7 +10,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
-APP_NAME = "AutoFTBQ"; VERSION = "1.2.5"; AUTHOR = "Taki"
+APP_NAME = "AutoFTBQ"; VERSION = "1.2.6"; AUTHOR = "Taki"
 CONFIG_PATH = os.path.join(SCRIPT_DIR, "config.json")
 
 AI_AVAILABLE = False; AI_IMPORT_ERROR = ""
