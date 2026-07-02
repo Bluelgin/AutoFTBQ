@@ -65,7 +65,7 @@ class OllamaClient:
     def chat(self, messages, temperature=0.5, max_tokens=8192):
         """
         发送聊天请求到Ollama
-        返回生成的文本内容
+        返回 (content, is_truncated): content 为生成的文本, is_truncated 表示输出被截断
         """
         system_prompt = ""
         user_prompt = ""
@@ -93,7 +93,10 @@ class OllamaClient:
                 timeout=600  # 本地模型可能较慢，给10分钟
             )
             if resp.status_code == 200:
-                return resp.json().get("response", "")
+                data = resp.json()
+                content = data.get("response", "")
+                done = data.get("done", True)
+                return content, not done  # done=False 表示输出被截断
             elif resp.status_code == 404:
                 raise Exception(
                     f"模型 {self.model} 不存在。请运行: ollama pull {self.model}"

@@ -333,11 +333,20 @@ class DeepSeekClient:
     def __init__(self, api_key):
         self.headers = {"Authorization":f"Bearer {api_key.strip()}","Content-Type":"application/json"}
     def chat(self, messages, temperature=0.7, max_tokens=8192):
+        """
+        发送聊天请求到 DeepSeek
+        返回 (content, is_truncated): content 为生成的文本, is_truncated 表示输出被截断(finish_reason=="length")
+        """
         payload = {"model":DEEPSEEK_MODEL,"messages":messages,"temperature":temperature,"max_tokens":max_tokens,"stream":False}
         for attempt in range(MAX_RETRIES):
             try:
                 resp = requests.post(DEEPSEEK_API_URL,json=payload,headers=self.headers,timeout=API_TIMEOUT)
-                if resp.status_code==200: return resp.json()["choices"][0]["message"]["content"]
+                if resp.status_code==200:
+                    data = resp.json()
+                    choice = data["choices"][0]
+                    content = choice["message"]["content"]
+                    finish_reason = choice.get("finish_reason", "stop")
+                    return content, (finish_reason == "length")
                 elif resp.status_code==401: raise Exception("API Key无效，请检查后重试")
                 elif resp.status_code==429: time.sleep(RETRY_DELAY*(attempt+1)*2)
                 elif resp.status_code>=500: time.sleep(RETRY_DELAY*(attempt+1))
@@ -467,9 +476,29 @@ class QuestBookGenerator:
         for m in self.all_mods: ns.add(m['mod_id'])
         return ", ".join(sorted(ns)[:50])
 
-    def _generate_questbook(self, mod_list, all_ns, item_catalog="", wiki_text=""):
+    def _calc_max_tokens(self, is_continuation=False):
+        """根据Mod数量动态计算max_tokens，6档精细化"""
+        mod_count = len(self.prog_mods) + len(self.unk)
+        if mod_count <= 5:
+            base = 16384
+        elif mod_count <= 10:
+            base = 32768
+        elif mod_count <= 20:
+            base = 49152
+        elif mod_count <= 30:
+            base = 65536
+        elif mod_count <= 50:
+            base = 98304
+        else:
+            base = 131072
+        if self.engine == "ollama":
+            base = min(base, 49152 if is_continuation else 40960)
+        return base
+
+    def _build_sp(self):
+        """构建系统提示词（不含物品ID，可被缓存命中）"""
         if self.lang == "zh":
-            sp = (
+            return (
                 "你是Minecraft整合包「任务指南」设计师。为FTB Quests设计一份非常丰富的任务书JSON。\n\n"
                 "【核心定位】：这是一份「教程指南」，帮助玩家体验每个Mod的全部玩法内容。\n"
                 "不是编故事，而是有目的性地引导玩家一步步上手。\n\n"
@@ -521,21 +550,8 @@ class QuestBookGenerator:
                 ']}\n]}\n\n'
                 "要求: 总任务数按Mod数量灵活调整。所有title/subtitle用中文。每个主线任务至少有2-3条支线挂接。不需要写icon字段。只输出JSON。"
             )
-            wiki_block = f"{wiki_text}\n\n" if wiki_text else ""
-            up = (
-                f"{mod_list}\n\n"
-                f"{wiki_block}"
-                f"=== 可用物品命名空间 ===\n{all_ns}\n\n"
-                f"{item_catalog}\n\n"
-                "请设计一份非常丰富的任务指南JSON。注意：\n"
-                "- 覆盖每个Mod的完整玩法，从入门到精通\n"
-                "- 必须包含支线任务（无dependencies的独立任务）\n"
-                "- 严格使用上面列出的物品ID，不要编造不存在的ID\n"
-                "- 确保每个核心Mod都至少有一章\n"
-                "- 告诉玩家每一步做什么、用什么做、做完得到什么"
-            )
         else:
-            sp = (
+            return (
                 "You are a Minecraft modpack guide designer for FTB Quests. "
                 "Design a VERY RICH questbook JSON.\n\n"
                 "POSITIONING: Tutorial guide that helps players experience ALL content of each mod.\n\n"
@@ -552,23 +568,100 @@ class QuestBookGenerator:
                 "Layout: x spaced 2.0 horizontal. Reward balanced by stage.\n\n"
                 "Output ONLY valid JSON, 70-120 quests total."
             )
-            up = (
+
+    def _build_up(self, mod_list, all_ns, wiki_text="", item_catalog=""):
+        """构建用户提示词，item_catalog为空时生成不带物品ID的短版（用于缓存预热）"""
+        if self.lang == "zh":
+            wiki_block = f"{wiki_text}\n\n" if wiki_text else ""
+            return (
+                f"{mod_list}\n\n"
+                f"{wiki_block}"
+                f"=== 可用物品命名空间 ===\n{all_ns}\n\n"
+                f"{item_catalog}\n\n"
+                "请设计一份非常丰富的任务指南JSON。注意：\n"
+                "- 覆盖每个Mod的完整玩法，从入门到精通\n"
+                "- 必须包含支线任务（无dependencies的独立任务）\n"
+                "- 严格使用上面列出的物品ID，不要编造不存在的ID\n"
+                "- 确保每个核心Mod都至少有一章\n"
+                "- 告诉玩家每一步做什么、用什么做、做完得到什么"
+            )
+        else:
+            return (
                 f"{mod_list}\n\n=== Allowed namespaces ===\n{all_ns}\n\n"
                 f"{item_catalog}\n\n"
                 "Design a very rich questbook JSON with branches and main lines. "
                 "Use ONLY the item IDs listed above."
             )
-        # 输出token上限根据Mod数量动态调整
-        mod_count = len(self.prog_mods) + len(self.unk)
-        if mod_count <= 10:
-            max_tok = 32768
-        elif mod_count <= 30:
-            max_tok = 65536
-        else:
-            max_tok = 131072
-        if self.engine == "ollama":
-            max_tok = min(max_tok, 40960)  # Ollama本地模型限制
-        return self.client.chat([{"role":"system","content":sp},{"role":"user","content":up}], max_tokens=max_tok, temperature=0.5)
+
+    def _generate_questbook(self, mod_list, all_ns, item_catalog="", wiki_text=""):
+        """三级管道：Cache Warmup → Full Gen → Auto-Continue"""
+        sp = self._build_sp()
+        max_tok = self._calc_max_tokens()
+        max_continue = 3 if self.engine == "deepseek" else 1
+
+        # ── 第1级：Cache Warmup（仅DeepSeek，发送不含物品ID的短版提示词）──
+        if self.engine == "deepseek":
+            warmup_up = self._build_up(mod_list, all_ns, wiki_text, item_catalog="")
+            warmup_messages = [
+                {"role": "system", "content": sp},
+                {"role": "user", "content": warmup_up + "\n\n请返回 {}，不需要生成任何实际内容。"}
+            ]
+            try:
+                # 预热用短超时（10秒），失败就跳过，不阻塞主流程
+                warmup_payload = {
+                    "model": DEEPSEEK_MODEL, "messages": warmup_messages,
+                    "temperature": 0.1, "max_tokens": 16, "stream": False
+                }
+                requests.post(DEEPSEEK_API_URL, json=warmup_payload,
+                              headers=self.client.headers, timeout=10)
+            except Exception:
+                pass  # 预热失败不阻塞主流程
+
+        # ── 第2级：完整生成 + 第3级：Auto-Continue ──
+        full_up = self._build_up(mod_list, all_ns, wiki_text, item_catalog)
+        conversation = [{"role": "system", "content": sp},
+                        {"role": "user", "content": full_up}]
+        full_content = ""
+
+        for _round in range(max_continue + 1):
+            content, truncated = self.client.chat(
+                conversation, max_tokens=max_tok, temperature=0.5
+            )
+            if _round > 0:
+                full_content += "\n"
+            full_content += content
+
+            # ── 检查是否需要续写 ──
+            if not truncated:
+                extracted = self._extract_json(full_content)
+                try:
+                    json.loads(extracted)
+                    break  # ✅ 完整且有效
+                except json.JSONDecodeError:
+                    if _round >= max_continue:
+                        break  # 已达上限，后续有修复逻辑
+                    # API说完整但JSON解析失败 → 强制续写一轮
+            else:
+                if _round >= max_continue:
+                    break
+
+            # 添加续写请求到对话历史
+            conversation.append({"role": "assistant", "content": content})
+            if self.lang == "zh":
+                continuation_prompt = (
+                    "继续输出接下来的JSON任务数据。"
+                    "直接从上次中断的地方继续，不要重复已有内容，不要任何解释。"
+                    "只输出JSON数据，不要用markdown包裹。"
+                )
+            else:
+                continuation_prompt = (
+                    "Continue outputting the JSON quest data. "
+                    "Start exactly where you left off. Do not repeat. "
+                    "Output ONLY JSON data, no markdown."
+                )
+            conversation.append({"role": "user", "content": continuation_prompt})
+
+        return full_content
 
     def _save_snbt_files(self, quest_json_text, scanned_items=None, output_dir=None):
         SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -582,7 +675,7 @@ class QuestBookGenerator:
         rt_dir = os.path.join(base_dir, "reward_tables")
         os.makedirs(rt_dir, exist_ok=True)
         with open(os.path.join(base_dir,"ai_raw_output.txt"),"w",encoding="utf-8") as f:f.write(quest_json_text)
-        json_text = self._extract_json(quest_json_text)
+        json_text = self._merge_json_parts(quest_json_text)
         ai_data = None
         for attempt in range(4):
             try:
@@ -773,8 +866,8 @@ class QuestBookGenerator:
             "quest_links": [],
             "quests": [{
                 "id": "ZZZZZZZZZZZZZZZ0",
-                "title": "【生成完毕，右下角打开编辑模式删除本行】",
-                "subtitle": "此章节为 AutoFTBQ 自动生成标记，可安全删除",
+                "title": "本软件完全免费，此章节是用于检测生成结果，可随意删除",
+                "subtitle": "",
                 "icon": "minecraft:writable_book",
                 "x": _D(0.0),
                 "y": _D(0.0),
@@ -783,7 +876,7 @@ class QuestBookGenerator:
                 "dependencies": [],
                 "rewards": [],
             }],
-            "title": "【生成完毕，右下角打开编辑模式删除】",
+            "title": "本软件完全免费，此章节是用于检测生成结果，可随意删除",
         }
         with open(os.path.join(chapters_dir, f"{mark_chu}.snbt"), "w", encoding="utf-8") as f:
             f.write(to_snbt(mark_cho))
@@ -802,6 +895,57 @@ class QuestBookGenerator:
         }
         with open(os.path.join(base_dir,"data.snbt"),"w",encoding="utf-8") as f:f.write(to_snbt(ds))
         return base_dir
+
+    def _merge_json_parts(self, raw_text):
+        """将多段续写返回的原始文本合并为一个完整的JSON字符串"""
+        # 策略1：直接尝试 _extract_json（兼容单段）
+        result = self._extract_json(raw_text)
+        try:
+            json.loads(result)
+            return result
+        except json.JSONDecodeError:
+            pass
+
+        # 策略2：用栈追踪 {} 的平衡性，提取所有完整 JSON 片段
+        parts = []
+        i = 0
+        while i < len(raw_text):
+            if raw_text[i] == '{':
+                depth = 0
+                j = i
+                while j < len(raw_text):
+                    ch = raw_text[j]
+                    if ch == '{':
+                        depth += 1
+                    elif ch == '}':
+                        depth -= 1
+                        if depth == 0:
+                            parts.append(raw_text[i:j+1])
+                            i = j
+                            break
+                    j += 1
+            i += 1
+
+        if not parts:
+            return result  # fallback to _extract_json result
+
+        if len(parts) == 1:
+            return parts[0]
+
+        # 策略3：以第一个完整 JSON 为主体，将其余部分的内容合并进去
+        main = json.loads(parts[0])
+        for extra_raw in parts[1:]:
+            try:
+                extra = json.loads(extra_raw)
+                if "chapters" in extra:
+                    main.setdefault("chapters", []).extend(extra["chapters"])
+                for k, v in extra.items():
+                    if k != "chapters":
+                        main[k] = v
+            except json.JSONDecodeError:
+                pass
+
+        return json.dumps(main, ensure_ascii=False)
 
     def _extract_json(self, text):
         if not text: return "{}"
