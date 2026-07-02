@@ -2,8 +2,8 @@
 
 ![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)
 ![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey.svg)
-![License](https://img.shields.io/badge/License-MIT-green.svg)
-![Version](https://img.shields.io/badge/Version-1.2.6-orange.svg)
+![License](https://img.shields.io/badge/License-GPL--3.0-green.svg)
+![Version](https://img.shields.io/badge/Version-1.3.0-orange.svg)
 
 基于 AI 自动生成 Minecraft [FTB Quests](https://www.curseforge.com/minecraft/mc-mods/ftb-quests-forge) 任务书的桌面工具。
 
@@ -43,10 +43,6 @@ pip install requests
 # 3. 运行
 python main.py
 ```
-
-### 方式二：打包运行
-
-下载 [Releases](https://github.com/Bluelgin/AutoFTBQ/releases) 中的 `AutoFTBQ.exe`，双击运行。
 
 ---
 
@@ -196,9 +192,9 @@ questbook_output/
 | 文件 | 行数 | 说明 |
 |------|------|------|
 | `main.py` | ~900 | Tkinter GUI 主界面 — 启动模式弹窗、双引擎切换、输出目录、UI 交互、线程管理 |
-| `ai_module.py` | ~660 | AI 核心模块 — DeepSeek/Ollama API、JSON 解析、SNBT 生成、151 个 Mod 库 |
+| `ai_module.py` | ~970 | AI 核心模块 — DeepSeek/Ollama API、三级管道(缓存预热+自动续写)、JSON 合并、SNBT 生成、151 个 Mod 库 |
 | `mod_scanner.py` | ~360 | 物品ID扫描器 — JAR/ZIP 解压、模型/配方/语言文件扫描、全量物品目录生成、缓存、ID 校验 |
-| `ollama_adapter.py` | ~110 | Ollama 适配器 — 自动检测、模型推荐、HTTP API |
+| `ollama_adapter.py` | ~110 | Ollama 适配器 — 自动检测、模型推荐、HTTP API（带截断检测） |
 | `mcwiki_crawler.py` | ~250 | MC百科 Wiki 爬虫 — 并发抓取 Mod 页面，提取物品/方块信息增强数据 |
 | `config.example.json` | 4 | 配置模板 — API Key + Mod 文件夹 + 输出目录 |
 | `start.bat` | - | Windows 一键启动脚本 |
@@ -212,9 +208,10 @@ questbook_output/
 ```
 选择 Mod → 分类（核心/辅助/未分类）
          → 扫描 JAR 文件提取真实物品ID（带缓存）
+         → Cache Warmup（预热DeepSeek前缀缓存）
          → 构建 Prompt（Mod 列表 + 完整物品目录 + 坐标布局规范）
-         → 调用 DeepSeek/Ollama API
-         → 智能解析 JSON（自动修复截断/缺失括号）
+         → 调用 DeepSeek/Ollama API（自动续写截断输出）
+         → 智能解析 JSON（多段合并，自动修复截断/缺失括号）
          → 提取 x/y 坐标（优先使用 AI 指定坐标）
          → 转为 FTB Quests 标准 SNBT 格式
          → 校验物品ID → 输出报告
@@ -264,6 +261,7 @@ JAR/ZIP 文件 → 解压读取
 
 ## ⚠️ 注意事项
 
+- **本仓库仅用于技术交流，不提供打包好的可执行文件**
 - **Python 版本**：需要 Python 3.10 或更高版本
 - **依赖**：仅需 `requests` 库（`pip install requests`）
 - **DeepSeek API** 为付费服务（约 ¥1/次生成），需自行前往 [platform.deepseek.com](https://platform.deepseek.com) 获取 Key
@@ -276,7 +274,9 @@ JAR/ZIP 文件 → 解压读取
 
 ## 📄 许可证
 
-MIT License
+GNU General Public License v3.0 — 详见 [LICENSE](LICENSE) 文件。
+
+任何引用、修改、分发本代码的项目也必须以 GPL-3.0 协议开源。
 
 ## 👤 作者
 
