@@ -21,7 +21,7 @@ except ImportError:
     import modrinth_client as _mrc
 
 DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
-DEEPSEEK_MODEL = "deepseek-chat"
+DEEPSEEK_MODEL = "deepseek-v4-flash"
 MAX_RETRIES = 3; RETRY_DELAY = 3; API_TIMEOUT = 300
 OUTPUT_DIR_NAME = "questbook_output"
 
@@ -557,7 +557,7 @@ class DeepSeekClient:
 # ════════════════════════════════════════════════════════
 # 通用 OpenAI 兼容客户端
 PROVIDER_PRESETS = {
-    "deepseek": {"url": "https://api.deepseek.com/chat/completions", "model": "deepseek-chat"},
+    "deepseek": {"url": "https://api.deepseek.com/chat/completions", "model": "deepseek-v4-flash"},
 }
 
 class GenericOpenAIClient:
