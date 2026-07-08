@@ -671,7 +671,7 @@ class QuestBookGenerator:
                 self._progress("已获取 MC百科 Wiki 数据", 12)
 
         # 远程拉取 playstyle 玩法说明（GitHub raw + 本地缓存7天）
-        PLAYSTYLE_CACHE_DIR = os.path.join(SCRIPT_DIR, "_playstyle_cache")
+        PLAYSTYLE_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_playstyle_cache")
         os.makedirs(PLAYSTYLE_CACHE_DIR, exist_ok=True)
         playstyle_lines = []
         for m in self.all_mods:
