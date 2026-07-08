@@ -954,21 +954,51 @@ class App:
         check_for_update(VERSION, self._on_update_result)
 
     def _on_update_result(self, latest_ver, download_url):
-        def _ui():
-            if latest_ver and download_url:
-                self.update_label.config(
-                    text=f"\u53d1\u73b0\u65b0\u7248\u672c v{latest_ver}\uff01\u70b9\u51fb\u4e0b\u8f7d",
-                    fg="#2196F3"
-                )
-                self.update_label.latest_url = download_url
-            else:
-                self.update_label.config(text="")
-        self.root.after(0, _ui)
+        def _show_dialog():
+            if not latest_ver:
+                return
+            top = tk.Toplevel(self.root)
+            top.title("发现新版本")
+            top.configure(bg="#ffffff")
+            w, h = 380, 200
+            sw, sh = top.winfo_screenwidth(), top.winfo_screenheight()
+            top.geometry(f"{w}x{h}+{(sw-w)//2}+{(sh-h)//2}")
+            top.resizable(False, False)
+            top.transient(self.root)
+            top.grab_set()
+
+            tk.Label(top, text=f"发现新版本 v{latest_ver}！",
+                     font=("Microsoft YaHei", 14, "bold"),
+                     fg="#333333", bg="#ffffff").pack(pady=(20, 5))
+            tk.Label(top, text="请选择下载方式：",
+                     font=("Microsoft YaHei", 10),
+                     fg="#666666", bg="#ffffff").pack(pady=(0, 15))
+
+            btn_frame = tk.Frame(top, bg="#ffffff")
+            btn_frame.pack(pady=(5, 10))
+
+            def _github():
+                webbrowser.open("https://github.com/Bluelgin/AutoFTBQ/releases/latest")
+                top.destroy()
+
+            def _quark():
+                webbrowser.open(download_url or "https://pan.quark.cn/s/25387b63a76c")
+                top.destroy()
+
+            tk.Button(btn_frame, text="GitHub 更新", font=("Microsoft YaHei", 10),
+                      fg="#ffffff", bg="#2196F3", bd=0, padx=16, pady=4,
+                      command=_github).pack(side=tk.LEFT, padx=(0, 8))
+            tk.Button(btn_frame, text="夸克网盘更新", font=("Microsoft YaHei", 10),
+                      fg="#ffffff", bg="#ff9800", bd=0, padx=16, pady=4,
+                      command=_quark).pack(side=tk.LEFT, padx=(8, 0))
+            tk.Button(btn_frame, text="稍后再说", font=("Microsoft YaHei", 10),
+                      fg="#666666", bg="#e0e0e0", bd=0, padx=12, pady=4,
+                      command=top.destroy).pack(side=tk.LEFT, padx=(8, 0))
+
+        self.root.after(0, _show_dialog)
 
     def _on_update_click(self, event):
-        url = getattr(self.update_label, "latest_url", "")
-        if url:
-            webbrowser.open(url)
+        pass
 
     def _center_window(self):
         self.root.update_idletasks()
