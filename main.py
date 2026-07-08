@@ -955,6 +955,7 @@ class App:
 
     def _on_update_result(self, latest_ver, download_url):
         def _show_dialog():
+            self.update_label.config(text="")  # 无论有没有更新都清除"检查更新..."
             if not latest_ver:
                 return
             top = tk.Toplevel(self.root)

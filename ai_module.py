@@ -671,36 +671,21 @@ class QuestBookGenerator:
                 self._progress("已获取 MC百科 Wiki 数据", 12)
 
         # 远程拉取 playstyle 玩法说明（GitHub raw + 本地缓存7天）
-        PLAYSTYLE_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_playstyle_cache")
-        os.makedirs(PLAYSTYLE_CACHE_DIR, exist_ok=True)
         playstyle_lines = []
         for m in self.all_mods:
             mod_id = m.get("mod_id", "")
             if not mod_id:
                 continue
             safe_name = mod_id.replace("/", "_").replace("\\", "_")
-            cache_path = os.path.join(PLAYSTYLE_CACHE_DIR, f"{safe_name}.json")
-            content = None
-            # 检查本地缓存
-            if os.path.isfile(cache_path):
-                try:
-                    with open(cache_path, "r", encoding="utf-8") as f:
-                        cd = json.load(f)
-                    age = time.time() - cd.get("time", 0)
-                    if age < 7 * 86400:
-                        content = cd.get("text", "")
-                except Exception:
-                    pass
-            if content is None:
-                try:
-                    url = f"https://raw.githubusercontent.com/Bluelgin/AutoFTBQ/main/playstyle_data/{safe_name}.md"
-                    r = requests.get(url, timeout=5)
-                    if r.status_code == 200:
-                        content = r.text.strip()
-                        with open(cache_path, "w", encoding="utf-8") as f:
-                            json.dump({"time": time.time(), "text": content}, f, ensure_ascii=False)
-                except Exception:
-                    pass
+            try:
+                url = f"https://raw.githubusercontent.com/Bluelgin/AutoFTBQ/main/playstyle_data/{safe_name}.md"
+                r = requests.get(url, timeout=5)
+                if r.status_code == 200:
+                    content = r.text.strip()
+                    if content:
+                        playstyle_lines.append(f"\n[{mod_id} 玩法简介]:\n{content[:2000]}\n")
+            except Exception:
+                pass
             if content:
                 playstyle_lines.append(f"\n[{mod_id} 玩法简介]:\n{content[:2000]}\n")
 
