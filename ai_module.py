@@ -115,7 +115,7 @@ MOD_DB = {
     "storagedrawers": {"name":"Storage Drawers","modid":"storagedrawers","category":"utility"},
     "sophisticatedbackpacks": {"name":"Sophisticated Backpacks","modid":"sophisticatedbackpacks","category":"utility"},
     "refinedstorage": {"name":"Refined Storage","modid":"refinedstorage","category":"utility"},
-    "appliedenergistics": {"name":"Applied Energistics 2","modid":"appliedenergistics2","category":"utility"},
+    "appliedenergistics": {"name":"Applied Energistics 2","modid":"appliedenergistics2","category":"tech"},
     "appliedenergistics2": {"name":"Applied Energistics 2","modid":"appliedenergistics2","category":"utility"},
     "ae2": {"name":"Applied Energistics 2","modid":"appliedenergistics2","category":"utility"},
     "cyclic": {"name":"Cyclic","modid":"cyclic","category":"utility"},
@@ -686,8 +686,6 @@ class QuestBookGenerator:
                         playstyle_lines.append(f"\n[{mod_id} 玩法简介]:\n{content[:2000]}\n")
             except Exception:
                 pass
-            if content:
-                playstyle_lines.append(f"\n[{mod_id} 玩法简介]:\n{content[:2000]}\n")
 
         if playstyle_lines:
             if wiki_text:
