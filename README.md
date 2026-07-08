@@ -261,7 +261,6 @@ JAR/ZIP 文件 → 解压读取
 
 ## ⚠️ 注意事项
 
-- **本仓库仅用于技术交流，不提供打包好的可执行文件**
 - **Python 版本**：需要 Python 3.10 或更高版本
 - **依赖**：仅需 `requests` 库（`pip install requests`）
 - **DeepSeek API** 为付费服务（约 ¥1/次生成），需自行前往 [platform.deepseek.com](https://platform.deepseek.com) 获取 Key
