@@ -277,6 +277,10 @@ GNU General Public License v3.0 — 详见 [LICENSE](LICENSE) 文件。
 
 任何引用、修改、分发本代码的项目也必须以 GPL-3.0 协议开源。
 
+---
+
+[![Star History Chart](https://api.star-history.com/svg?repos=Bluelgin/AutoFTBQ&type=Date)](https://star-history.com/#Bluelgin/AutoFTBQ&Date)
+
 ## 👤 作者
 
 **Taki** ([@Bluelgin](https://github.com/Bluelgin))
