@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """AutoFTBQ - MC FTB Quest Book Generator"""
 
-import os, sys, json, subprocess, threading
+import os, sys, json, subprocess, threading, webbrowser
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
@@ -10,7 +10,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
-APP_NAME = "AutoFTBQ"; VERSION = "1.3.0"; AUTHOR = "Taki"
+APP_NAME = "AutoFTBQ"; VERSION = "1.3.1"; AUTHOR = "Taki"
 CONFIG_PATH = os.path.join(SCRIPT_DIR, "config.json")
 
 AI_AVAILABLE = False; AI_IMPORT_ERROR = ""
@@ -26,13 +26,39 @@ ollama_best_model = None
 
 CAT_LABEL = {"vanilla":"原版","tech":"科技","magic":"魔法","world":"维度/Boss","mob":"生物","utility":"辅助","food":"食物","decor":"装饰","unknown":"未知"}
 
+# ── 版本检测 ──
+UPDATE_URL = "https://raw.githubusercontent.com/Bluelgin/AutoFTBQ/main/update.json"
+
+def _parse_version(ver_str):
+    try:
+        return tuple(int(x) for x in str(ver_str).lstrip("v").split("."))
+    except Exception:
+        return (0,)
+
+def check_for_update(current_version, callback=None):
+    """异步检查 GitHub 是否有新版本"""
+    def _run():
+        try:
+            import requests
+            resp = requests.get(UPDATE_URL, timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()
+                latest = data.get("version", "")
+                url = data.get("download_url", "")
+                if latest and _parse_version(latest) > _parse_version(current_version):
+                    if callback: callback(latest, url); return
+        except Exception:
+            pass
+        if callback: callback(None, None)
+    threading.Thread(target=_run, daemon=True).start()
+
 T = {
     "zh": {
         "title": "AutoFTBQ - MC FTB任务书生成器",
         "subtitle": "选择 Mod → AI 生成完整任务指南",
         "subtitle_api": "API 模式 — DeepSeek / Ollama 自动生成",
         "subtitle_import": "导入模式 — 网页AI生成后粘贴JSON",
-        "api_key": "API Key (DeepSeek)", "api_desc": "输入 DeepSeek API Key",
+        "api_key": "API Key", "api_desc": "输入 API Key",
         "mod_folder": "Mod 文件夹", "mod_desc": "选择包含 .jar / .zip Mod 的文件夹",
         "browse": "浏览", "show": "显示", "hide": "隐藏",
         "select_mods": "选择 Mod",
@@ -64,7 +90,7 @@ T = {
         "subtitle": "Select Mods → AI generates quest guide",
         "subtitle_api": "API Mode — DeepSeek / Ollama auto-gen",
         "subtitle_import": "Import Mode — paste JSON from web AI",
-        "api_key": "API Key (DeepSeek)", "api_desc": "Enter DeepSeek API Key",
+        "api_key": "API Key", "api_desc": "Enter API Key",
         "mod_folder": "Mod Folder", "mod_desc": "Select .jar / .zip folder",
         "browse": "Browse", "show": "Show", "hide": "Hide",
         "select_mods": "Select Mods",
@@ -213,7 +239,7 @@ class ModeSelectDialog(tk.Toplevel):
                 child.bind("<Button-1>", lambda e: self._select("api"))
             tk.Label(card1, text="🤖  API 自动生成", font=("Microsoft YaHei", 13, "bold"),
                      fg="#1a1a1a", bg="#f5f8ff").pack(anchor=tk.W)
-            tk.Label(card1, text="填写 DeepSeek API Key 或使用本地 Ollama，"
+            tk.Label(card1, text="填写 API Key 或使用本地 Ollama，"
                      "一键自动生成任务书 JSON 并转换为 SNBT",
                      font=df, fg="#666666", bg="#f5f8ff", wraplength=400, justify=tk.LEFT).pack(anchor=tk.W, pady=(4, 6))
             tk.Button(card1, text="选择 API 模式 →", font=("Microsoft YaHei", 10, "bold"),
@@ -289,6 +315,9 @@ class App:
         self.api_key_var = tk.StringVar(value=self.config.get("api_key", ""))
         self.mod_folder_var = tk.StringVar(value=self.config.get("mod_folder", ""))
         self.engine_var = tk.StringVar(value=self.config.get("engine", "deepseek"))
+        self.provider_var = tk.StringVar(value=self.config.get("provider", "deepseek"))
+        self.api_url_var = tk.StringVar(value=self.config.get("api_url", ""))
+        self.api_model_var = tk.StringVar(value=self.config.get("api_model", ""))
         self.ollama_model_var = tk.StringVar(value=self.config.get("ollama_model", ""))
         self.output_dir_var = tk.StringVar(value=self.config.get("output_dir", ""))
         self.use_wiki_var = tk.BooleanVar(value=self.config.get("use_wiki", False))
@@ -346,6 +375,9 @@ class App:
         self.config["api_key"] = self.api_key_var.get().strip()
         self.config["mod_folder"] = self.mod_folder_var.get().strip()
         self.config["engine"] = self.engine_var.get()
+        self.config["provider"] = self.provider_var.get()
+        self.config["api_url"] = self.api_url_var.get().strip()
+        self.config["api_model"] = self.api_model_var.get().strip()
         self.config["ollama_model"] = self.ollama_model_var.get()
         self.config["output_dir"] = self.output_dir_var.get().strip()
         try:
@@ -407,6 +439,7 @@ class App:
             self.engine_ds_btn.config(bg="#e0e0e0", fg="#555555")
             self.engine_ollama_btn.config(bg="#4caf50", fg="#ffffff")
             self.api_frame.pack_forget()
+            self.provider_frame.pack_forget()
             if ollama_available and ollama_best_model:
                 self.ollama_status_label.config(text=f"✓ 模型: {ollama_best_model}", fg="#4caf50")
             elif ollama_available:
@@ -418,6 +451,7 @@ class App:
             self.engine_ollama_btn.config(bg="#e0e0e0", fg="#555555")
             self.ollama_status_label.config(text="")
             self.api_frame.pack(before=self.engine_frame, fill=tk.X, pady=(0, 15))
+            self.provider_frame.pack(before=self.api_frame, fill=tk.X, pady=(0, 6))
 
     def _build_ui(self):
         try:
@@ -485,6 +519,11 @@ class App:
         self.footer_label = tk.Label(mf, font=("Microsoft YaHei", 8), fg="#cccccc", bg="#ffffff")
         self.footer_label.pack(pady=(15, 0))
 
+        # 版本检测标签（点击可跳转下载）
+        self.update_label = tk.Label(mf, font=("Microsoft YaHei", 8), fg="#888888", bg="#ffffff", cursor="hand2")
+        self.update_label.pack(before=self.footer_label, pady=(0, 2))
+        self.update_label.bind("<Button-1>", self._on_update_click)
+
     def _build_api_specific(self, mf, df, sf, bf):
         """构建 API 模式专属 UI"""
         # ── API Key ──
@@ -507,7 +546,7 @@ class App:
         self.engine_frame.pack(fill=tk.X, pady=(0, 12))
         self.engine_label = tk.Label(self.engine_frame, text="AI引擎:", font=("Microsoft YaHei", 10, "bold"), fg="#555555", bg="#ffffff")
         self.engine_label.pack(side=tk.LEFT, padx=(0, 10))
-        self.engine_ds_btn = tk.Button(self.engine_frame, text="DeepSeek API", font=("Microsoft YaHei", 10),
+        self.engine_ds_btn = tk.Button(self.engine_frame, text="API", font=("Microsoft YaHei", 10),
                                         command=lambda: self._switch_engine("deepseek"),
                                         bg="#4a90d9", fg="#ffffff", bd=1, relief=tk.SOLID,
                                         cursor="hand2", padx=14, pady=3)
@@ -519,6 +558,25 @@ class App:
         self.engine_ollama_btn.pack(side=tk.LEFT, padx=(0, 5))
         self.ollama_status_label = tk.Label(self.engine_frame, text="", font=("Microsoft YaHei", 9), fg="#888888", bg="#ffffff")
         self.ollama_status_label.pack(side=tk.LEFT, padx=(12, 0))
+
+        # ── API 服务商选择（仅 API 模式） ──
+        self.provider_frame = tk.Frame(mf, bg="#ffffff")
+        self.provider_frame.pack(fill=tk.X, pady=(0, 8))
+        tk.Label(self.provider_frame, text="服务商:", font=("Microsoft YaHei", 9, "bold"), fg="#555555", bg="#ffffff").pack(side=tk.LEFT, padx=(0, 8))
+        self.provider_combo = ttk.Combobox(self.provider_frame, textvariable=self.provider_var,
+                                            values=["deepseek", "custom"],
+                                            state="readonly", width=14, font=("Microsoft YaHei", 9))
+        self.provider_combo.pack(side=tk.LEFT)
+        tk.Label(self.provider_frame, text="自定义URL:", font=("Microsoft YaHei", 9), fg="#888888", bg="#ffffff").pack(side=tk.LEFT, padx=(12, 4))
+        self.api_url_entry = tk.Entry(self.provider_frame, textvariable=self.api_url_var,
+                                       font=("Microsoft YaHei", 9), bd=1, relief=tk.SOLID,
+                                       fg="#555555", bg="#fafafa", width=18)
+        self.api_url_entry.pack(side=tk.LEFT)
+        tk.Label(self.provider_frame, text="模型:", font=("Microsoft YaHei", 9), fg="#888888", bg="#ffffff").pack(side=tk.LEFT, padx=(8, 4))
+        self.api_model_entry = tk.Entry(self.provider_frame, textvariable=self.api_model_var,
+                                          font=("Microsoft YaHei", 9), bd=1, relief=tk.SOLID,
+                                          fg="#555555", bg="#fafafa", width=14)
+        self.api_model_entry.pack(side=tk.LEFT)
 
         # ── Wiki 增强复选框 ──
         wiki_row = tk.Frame(mf, bg="#ffffff")
@@ -659,6 +717,7 @@ class App:
         if hasattr(self, 'generate_btn'):
             self.generate_btn.config(text=t("generating") if self.generating else t("generate"))
         self.footer_label.config(text=f"v{VERSION}  |  {t('author_line')}  |  {t('powered')}")
+        self._start_update_check()
         self._check_config_ready()
 
     def _toggle_lang(self):
@@ -830,31 +889,35 @@ class App:
         if not AI_AVAILABLE: messagebox.showerror(t("dep_error_title"), AI_IMPORT_ERROR); return
         engine = self.engine_var.get()
         api_key = self.api_key_var.get().strip()
-        if engine == "deepseek" and not api_key:
+        if engine in ("deepseek", "generic") and not api_key:
             messagebox.showwarning("Warning", t("enter_api")); return
         if engine == "ollama" and not ollama_available:
-            messagebox.showwarning("Warning", "Ollama未运行。请先启动Ollama，或切换到DeepSeek API。"); return
+            messagebox.showwarning("Warning", "Ollama未运行。请先启动Ollama。"); return
         if not self.selected_mods: messagebox.showwarning("Warning", "请点击「选择 Mod」勾选要生成的Mod"); return
         if not messagebox.askokcancel(t("confirm_title"), t("confirm_msg", len(self.selected_mods))): return
         self._save_config(); self.generating = True; self._lock_ui(True)
         self.set_info(t("preparing"), "info")
         mf = self.mod_folder_var.get().strip()
         threading.Thread(target=self._generate_thread, args=(
-            api_key if engine == "deepseek" else None,
+            api_key if engine != "ollama" else None,
             list(self.selected_mods), LANG, engine,
             self.ollama_model_var.get().strip(),
             self.output_dir_var.get().strip() or None,
             bool(self.use_wiki_var.get()),
+            self.provider_var.get(),
+            self.api_url_var.get().strip(),
+            self.api_model_var.get().strip(),
         ), daemon=True).start()
 
-    def _generate_thread(self, api_key, selected_mods, lang, engine, ollama_model, output_dir, use_wiki=False):
+    def _generate_thread(self, api_key, selected_mods, lang, engine, ollama_model, output_dir, use_wiki=False,
+                         provider=None, api_url=None, api_model=None):
         try:
             mf = self.mod_folder_var.get().strip()
             out = generate_quest_book(
                 api_key=api_key, selected_mods=selected_mods,
                 mod_folder=mf, progress_callback=self._on_progress,
                 lang=lang, engine=engine, ollama_model=ollama_model, output_dir=output_dir,
-                use_wiki=use_wiki
+                use_wiki=use_wiki, provider=provider, api_url=api_url, api_model=api_model
             )
             self.root.after(0, self._on_done, out)
         except Exception as e: self.root.after(0, self._on_fail, str(e))
@@ -883,6 +946,29 @@ class App:
             if self.generating: self.generating = False
             self._lock_ui(False)
         except Exception: pass
+
+
+    def _start_update_check(self):
+        """异步检测版本更新"""
+        self.update_label.config(text="\u68c0\u67e5\u66f4\u65b0...", fg="#888888")
+        check_for_update(VERSION, self._on_update_result)
+
+    def _on_update_result(self, latest_ver, download_url):
+        def _ui():
+            if latest_ver and download_url:
+                self.update_label.config(
+                    text=f"\u53d1\u73b0\u65b0\u7248\u672c v{latest_ver}\uff01\u70b9\u51fb\u4e0b\u8f7d",
+                    fg="#2196F3"
+                )
+                self.update_label.latest_url = download_url
+            else:
+                self.update_label.config(text="")
+        self.root.after(0, _ui)
+
+    def _on_update_click(self, event):
+        url = getattr(self.update_label, "latest_url", "")
+        if url:
+            webbrowser.open(url)
 
     def _center_window(self):
         self.root.update_idletasks()

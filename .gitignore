@@ -10,6 +10,8 @@ build/
 .reasonix/
 quests/
 questbook_output/
+_playstyle_cache/
+playstyle_data/playstyle_raw/
 config.json
 
 # Reference copies (not project code)
@@ -27,3 +29,8 @@ nul
 # OS
 .DS_Store
 Thumbs.db
+
+# Cache
+_modrinth_cache/
+_wiki_cache/
+reasonix.toml

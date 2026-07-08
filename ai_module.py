@@ -15,6 +15,11 @@ try:
 except ImportError:
     import ollama_adapter as _oa
 
+try:
+    from . import modrinth_client as _mrc
+except ImportError:
+    import modrinth_client as _mrc
+
 DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
 DEEPSEEK_MODEL = "deepseek-chat"
 MAX_RETRIES = 3; RETRY_DELAY = 3; API_TIMEOUT = 300
@@ -150,6 +155,52 @@ MOD_DB = {
     "gravestone": {"name":"GraveStone Mod","modid":"gravestone","category":"utility"},
     "tombstone": {"name":"Corail Tombstone","modid":"tombstone","category":"utility"},
     "corail": {"name":"Corail Tombstone","modid":"tombstone","category":"utility"},
+    # === 1.3.0 新增 ===
+    "appliedenergistics2": {"name":"Applied Energistics 2","modid":"appliedenergistics2","category":"tech"},
+    "extendedcrafting": {"name":"Extended Crafting","modid":"extendedcrafting","category":"tech"},
+    "enderstorage": {"name":"Ender Storage","modid":"enderstorage","category":"tech"},
+    "powah": {"name":"Powah!","modid":"powah","category":"tech"},
+    "scannable": {"name":"Scannable","modid":"scannable","category":"tech"},
+    "simplyjetpacks": {"name":"Simply Jetpacks","modid":"simplyjetpacks","category":"tech"},
+    "xnet": {"name":"XNet","modid":"xnet","category":"tech"},
+    "mobgrindingutils": {"name":"Mob Grinding Utils","modid":"mobgrindingutils","category":"tech"},
+    "mininggadgets": {"name":"Mining Gadgets","modid":"mininggadgets","category":"tech"},
+    "laserio": {"name":"LaserIO","modid":"laserio","category":"tech"},
+    "occultism": {"name":"Occultism","modid":"occultism","category":"magic"},
+    "ironspells": {"name":"Iron Spells n Spellbooks","modid":"irons_spellbooks","category":"magic"},
+    "eidolon": {"name":"Eidolon","modid":"eidolon","category":"magic"},
+    "elementalcraft": {"name":"ElementalCraft","modid":"elementalcraft","category":"magic"},
+    "hexerei": {"name":"Hexerei","modid":"hexerei","category":"magic"},
+    "malum": {"name":"Malum","modid":"malum","category":"magic"},
+    "reliquary": {"name":"Reliquary","modid":"xreliquary","category":"magic"},
+    "blue_skies": {"name":"Blue Skies","modid":"blue_skies","category":"world"},
+    "undergarden": {"name":"The Undergarden","modid":"undergarden","category":"world"},
+    "betterend": {"name":"BetterEnd","modid":"betterend","category":"world"},
+    "betternether": {"name":"Better Nether","modid":"betternether","category":"world"},
+    "deeperdarker": {"name":"Deeper and Darker","modid":"deeperdarker","category":"world"},
+    "alexmobs": {"name":"Alexs Mobs","modid":"alexsmobs","category":"mob"},
+    "aquaculture": {"name":"Aquaculture 2","modid":"aquaculture","category":"food"},
+    "cookingforblockheads": {"name":"Cooking for Blockheads","modid":"cookingforblockheads","category":"food"},
+    "croptopia": {"name":"Croptopia","modid":"croptopia","category":"food"},
+    "supplementaries": {"name":"Supplementaries","modid":"supplementaries","category":"decor"},
+    "backpacked": {"name":"Backpacked","modid":"backpacked","category":"utility"},
+    "functionalstorage": {"name":"Functional Storage","modid":"functionalstorage","category":"utility"},
+    "pneumaticcraft": {"name":"PneumaticCraft","modid":"pneumaticcraft","category":"tech"},
+    "advancedperipherals": {"name":"Advanced Peripherals","modid":"advancedperipherals","category":"tech"},
+    "computercraft": {"name":"ComputerCraft","modid":"computercraft","category":"tech"},
+    "silentgear": {"name":"Silent Gear","modid":"silentgear","category":"tech"},
+    "spartanweaponry": {"name":"Spartan Weaponry","modid":"spartanweaponry","category":"tech"},
+    "securitycraft": {"name":"Security Craft","modid":"securitycraft","category":"tech"},
+    "compactmachines": {"name":"Compact Machines","modid":"compactmachines","category":"tech"},
+    "easyvillagers": {"name":"Easy Villagers","modid":"easyvillagers","category":"utility"},
+    "torchmaster": {"name":"Torchmaster","modid":"torchmaster","category":"utility"},
+    "crafttweaker": {"name":"CraftTweaker","modid":"crafttweaker","category":"utility"},
+    "kubejs": {"name":"KubeJS","modid":"kubejs","category":"utility"},
+    "patchouli": {"name":"Patchouli","modid":"patchouli","category":"utility"},
+    "jade": {"name":"Jade","modid":"jade","category":"utility"},
+    "curios": {"name":"Curios API","modid":"curios","category":"utility"},
+    "ftbchunks": {"name":"FTB Chunks","modid":"ftbchunks","category":"utility"},
+    "ftbquests": {"name":"FTB Quests","modid":"ftbquests","category":"utility"},
 }
 
 # 附属 Mod 关系数据库：addon_modid → parent_modid
@@ -278,6 +329,149 @@ ADDON_PARENTS = {
 
 CAT_LABEL = {"vanilla":"原版","tech":"科技","magic":"魔法","world":"维度/Boss","mob":"生物","utility":"辅助","food":"食物","decor":"装饰","unknown":"未知"}
 
+def _resolve_mod_category(mod_id):
+    """两级管道：MOD_DB → Modrinth API（带缓存）"""
+    if not mod_id:
+        return None
+    for info in MOD_DB.values():
+        if info["modid"] == mod_id:
+            return info["category"]
+    try:
+        import modrinth_client as _mrc2
+        cat = _mrc2.fetch_modrinth_category(mod_id)
+        if cat:
+            return cat
+    except Exception:
+        pass
+    return None
+
+# 章节分组 — 关键词检测
+WEAPON_KEYWORDS = [
+    "sword", "blade", "katana", "saber", "rapier", "greatsword", "cutlass",
+    "dagger", "scythe", "axe_", "battleaxe", "bow", "crossbow", "longbow",
+    "staff", "wand", "gun", "rifle", "pistol", "cannon", "shotgun",
+    "hammer", "mace", "warhammer", "spear", "halberd", "glaive", "pike",
+    "trident", "shuriken", "bomb", "grenade",
+    "cleaver", "broadsword", "flail",
+]
+
+ARMOR_KEYWORDS = [
+    "helmet", "hood", "crown", "cap", "head_", "_hat",
+    "chestplate", "chest_", "body_", "cuirass", "tunic",
+    "leggings", "leggin", "legs_", "_legs", "pants_", "_pants", "greaves",
+    "boots", "shoes_", "feet_", "_feet", "sabaton",
+    "armor_", "_armor", "robe_", "_robe",
+]
+
+def _is_weapon(item_id):
+    if not item_id or ":" not in item_id:
+        return False
+    name = item_id.split(":", 1)[1].lower()
+    if "pickaxe" in name or "shovel" in name or "hoe" in name:
+        return False
+    for kw in WEAPON_KEYWORDS:
+        if kw.startswith("_"):
+            if name.endswith(kw): return True
+        elif kw.endswith("_"):
+            if name.startswith(kw.rstrip("_")): return True
+        else:
+            if kw in name: return True
+    return False
+
+def _is_armor(item_id):
+    if not item_id or ":" not in item_id:
+        return False
+    name = item_id.split(":", 1)[1].lower()
+    for kw in ARMOR_KEYWORDS:
+        if kw.startswith("_"):
+            if name.endswith(kw): return True
+        elif kw.endswith("_"):
+            if name.startswith(kw.rstrip("_")): return True
+        else:
+            if kw in name: return True
+    return False
+
+def _get_quest_primary_item(quest):
+    for task in quest.get("tasks", []):
+        if not isinstance(task, dict):
+            continue
+        ttype = str(task.get("type", "")).lower()
+        if "item" in ttype:
+            target = task.get("target") or task.get("item", "")
+            if target and ":" in target:
+                return target
+    return ""
+
+def _recipe_chain_depth(item_id, visited=None, max_depth=12):
+    if visited is None:
+        visited = set()
+    if not item_id or item_id in visited or max_depth <= 0:
+        return 0
+    visited.add(item_id)
+    inputs = _ms._recipe_inputs_cache.get(item_id, [])
+    if not inputs:
+        return 0
+    max_inp = 0
+    for inp in inputs[:3]:
+        d = _recipe_chain_depth(inp, visited, max_depth - 1)
+        if d > max_inp:
+            max_inp = d
+    return max_inp + 1
+
+def _build_milestone_list(all_mods):
+    """从配方缓存提取合成链深度≥3的关键物品作为里程碑"""
+    milestones = {}
+    cache = _ms._recipe_inputs_cache
+    for item_id in cache:
+        if ":" not in item_id:
+            continue
+        mod_id = item_id.split(":", 1)[0]
+        depth = _recipe_chain_depth(item_id)
+        if depth >= 3:
+            milestones.setdefault(mod_id, []).append((item_id, depth))
+    for m in all_mods:
+        mid = m.get("mod_id", "")
+        if mid not in milestones:
+            items = [(iid, _recipe_chain_depth(iid)) for iid in cache if iid.startswith(mid + ":")]
+            if items:
+                items.sort(key=lambda x: -x[1])
+                if items[0][1] >= 2:
+                    milestones[mid] = [items[0]]
+    result = {}
+    for mod_id, items in milestones.items():
+        items.sort(key=lambda x: -x[1])
+        result[mod_id] = [it for it, d in items[:3]]
+    return result
+
+def _milestone_to_prompt(milestones, lang="zh"):
+    """将里程碑字典转为 Prompt 中的'必须覆盖'段落"""
+    if not milestones:
+        return ""
+    lines = []
+    if lang == "zh":
+        lines.append("【必须覆盖的关键物品 - 每个至少1个任务】")
+        for mod_id, items in milestones.items():
+            names = ", ".join(items[:3])
+            lines.append(f"  {mod_id}: {names}")
+        lines.append("以上每个物品都必须在任务书中出现。\n")
+    else:
+        lines.append("[Must Cover Items - at least 1 quest each]")
+        for mod_id, items in milestones.items():
+            names = ", ".join(items[:3])
+            lines.append(f"  {mod_id}: {names}")
+        lines.append("Every item above must appear in the quest book.\n")
+    return "\n".join(lines)
+
+# 章节分组配置
+CHAPTER_GROUPS = {
+    "collections": {"title": "[武器-装备-饰品]", "icon": "minecraft:diamond_sword"},
+    "tech":    {"title": "[科技机械]",   "icon": "minecraft:redstone_block"},
+    "magic":   {"title": "[魔法研究]",   "icon": "minecraft:enchanting_table"},
+    "world":   {"title": "[维度探险]",   "icon": "minecraft:grass_block"},
+    "vanilla": {"title": "[主世界发展]", "icon": "minecraft:crafting_table"},
+    "misc":    {"title": "[装饰工具]", "icon": "minecraft:chest"},
+}
+
 def _parse_mod(filename, filepath=None):
     base = filename
     for ext in (".jar",".zip",".JAR",".ZIP"):
@@ -361,10 +555,46 @@ class DeepSeekClient:
         raise Exception("已达最大重试次数")
 
 # ════════════════════════════════════════════════════════
+# 通用 OpenAI 兼容客户端
+PROVIDER_PRESETS = {
+    "deepseek": {"url": "https://api.deepseek.com/chat/completions", "model": "deepseek-chat"},
+}
+
+class GenericOpenAIClient:
+    """兼容 OpenAI 格式的通用 API 客户端"""
+    def __init__(self, api_key, api_url, model):
+        self.api_url = api_url
+        self.model = model
+        self.headers = {"Authorization": f"Bearer {api_key.strip()}", "Content-Type": "application/json"}
+    def chat(self, messages, temperature=0.7, max_tokens=8192):
+        payload = {"model":self.model,"messages":messages,"temperature":temperature,"max_tokens":max_tokens,"stream":False}
+        for attempt in range(MAX_RETRIES):
+            try:
+                resp = requests.post(self.api_url, json=payload, headers=self.headers, timeout=API_TIMEOUT)
+                if resp.status_code==200:
+                    data = resp.json()
+                    choice = data["choices"][0]
+                    content = choice["message"]["content"]
+                    finish_reason = choice.get("finish_reason", "stop")
+                    return content, (finish_reason == "length")
+                elif resp.status_code==401: raise Exception("API Key无效，请检查后重试")
+                elif resp.status_code==402: raise Exception("账户额度不足，请检查API余额")
+                else:
+                    if attempt < MAX_RETRIES - 1: time.sleep(RETRY_DELAY); continue
+                    raise Exception(f"API请求失败 (HTTP {resp.status_code}): {resp.text[:200]}")
+            except requests.exceptions.Timeout:
+                if attempt < MAX_RETRIES - 1: time.sleep(RETRY_DELAY); continue
+                raise Exception("API请求超时")
+            except requests.exceptions.ConnectionError:
+                if attempt < MAX_RETRIES - 1: time.sleep(RETRY_DELAY); continue
+                raise Exception("无法连接API服务器")
+        raise Exception("API请求失败（重试次数耗尽）")
+
+# ════════════════════════════════════════════════════════
 class QuestBookGenerator:
     def __init__(self, api_key=None, selected_mods=None, mod_folder=None,
                  progress_callback=None, lang="zh", engine="deepseek",
-                 ollama_model=None):
+                 ollama_model=None, provider=None, api_url=None, api_model=None):
         # 根据引擎创建客户端
         self.engine = engine
         if engine == "ollama":
@@ -372,6 +602,11 @@ class QuestBookGenerator:
             self.client = _oa.OllamaClient(model=model)
         elif engine == "dummy":
             self.client = None  # 不调用API，仅用于SNBT转换
+        elif engine == "generic":
+            presets = PROVIDER_PRESETS.get(provider or "deepseek", {})
+            final_url = api_url or presets.get("url", "https://api.deepseek.com/chat/completions")
+            final_model = api_model or presets.get("model", "deepseek-chat")
+            self.client = GenericOpenAIClient(api_key or "", final_url, final_model)
         else:
             self.client = DeepSeekClient(api_key or "")
         self.all_mods = selected_mods or []
@@ -434,6 +669,45 @@ class QuestBookGenerator:
             wiki_text = _wiki.build_wiki_prompt_injections(self.all_mods, scanned_items)
             if wiki_text:
                 self._progress("已获取 MC百科 Wiki 数据", 12)
+
+        # 远程拉取 playstyle 玩法说明（GitHub raw + 本地缓存7天）
+        PLAYSTYLE_CACHE_DIR = os.path.join(SCRIPT_DIR, "_playstyle_cache")
+        os.makedirs(PLAYSTYLE_CACHE_DIR, exist_ok=True)
+        playstyle_lines = []
+        for m in self.all_mods:
+            mod_id = m.get("mod_id", "")
+            if not mod_id:
+                continue
+            safe_name = mod_id.replace("/", "_").replace("\\", "_")
+            cache_path = os.path.join(PLAYSTYLE_CACHE_DIR, f"{safe_name}.json")
+            content = None
+            # 检查本地缓存
+            if os.path.isfile(cache_path):
+                try:
+                    with open(cache_path, "r", encoding="utf-8") as f:
+                        cd = json.load(f)
+                    age = time.time() - cd.get("time", 0)
+                    if age < 7 * 86400:
+                        content = cd.get("text", "")
+                except Exception:
+                    pass
+            if content is None:
+                try:
+                    url = f"https://raw.githubusercontent.com/Bluelgin/AutoFTBQ/main/playstyle_data/{safe_name}.md"
+                    r = requests.get(url, timeout=5)
+                    if r.status_code == 200:
+                        content = r.text.strip()
+                        with open(cache_path, "w", encoding="utf-8") as f:
+                            json.dump({"time": time.time(), "text": content}, f, ensure_ascii=False)
+                except Exception:
+                    pass
+            if content:
+                playstyle_lines.append(f"\n[{mod_id} 玩法简介]:\n{content[:2000]}\n")
+
+        if playstyle_lines:
+            if wiki_text:
+                wiki_text += "\n"
+            wiki_text += "=== 玩法说明（人工提炼）===" + "\n".join(playstyle_lines)
         self._progress("生成丰富的任务书JSON (含支线/主线)...", 15)
         quest_json_text = self._generate_questbook(mod_list, all_ns, item_catalog, wiki_text)
         self._progress("解析并校验物品ID...", 80)
@@ -474,7 +748,7 @@ class QuestBookGenerator:
     def _build_all_ns(self):
         ns = {"minecraft"}
         for m in self.all_mods: ns.add(m['mod_id'])
-        return ", ".join(sorted(ns)[:50])
+        return ", ".join(sorted(ns))
 
     def _calc_max_tokens(self, is_continuation=False):
         """根据Mod数量动态计算max_tokens，6档精细化"""
@@ -495,7 +769,26 @@ class QuestBookGenerator:
             base = min(base, 49152 if is_continuation else 40960)
         return base
 
-    def _build_sp(self):
+    def _get_quest_config(self):
+        """根据 Mod 数量动态返回 (quest_range_str, max_continue)"""
+        mod_count = len(self.prog_mods) + len(self.unk)
+        if mod_count <= 5:
+            quest_range, mc = "50-80", 3
+        elif mod_count <= 10:
+            quest_range, mc = "80-150", 3
+        elif mod_count <= 20:
+            quest_range, mc = "150-250", 5
+        elif mod_count <= 30:
+            quest_range, mc = "250-350", 5
+        elif mod_count <= 50:
+            quest_range, mc = "350-500", 7
+        else:
+            quest_range, mc = "500-800", 10
+        if self.engine == "ollama":
+            mc = min(mc, 2)
+        return quest_range, mc
+
+    def _build_sp(self, quest_range="70-120"):
         """构建系统提示词（不含物品ID，可被缓存命中）"""
         if self.lang == "zh":
             return (
@@ -537,6 +830,7 @@ class QuestBookGenerator:
                 "- 物品ID只能用minecraft:或上述已安装Mod的命名空间\n"
                 "- 奖励按阶段合理分配\n"
                 "- ⚠️ 不需要写 icon 字段，程序会自动赋值图标\n\n"
+                f"【总任务数要求】：共 {quest_range} 个任务（含主线+支线）。Mod越多任务数越接近上限。\n\n"
                 "JSON示例(含大量支线):\n"
                 '{"title":"整合包指南","chapters":[\n'
                 '{"id":"ch_wood","title":"原版·木石时代","quests":[\n'
@@ -552,24 +846,24 @@ class QuestBookGenerator:
             )
         else:
             return (
-                "You are a Minecraft modpack guide designer for FTB Quests. "
-                "Design a VERY RICH questbook JSON.\n\n"
+                f"You are a Minecraft modpack guide designer for FTB Quests. "
+                f"Design a VERY RICH questbook JSON. Total: {quest_range} quests.\n\n"
                 "POSITIONING: Tutorial guide that helps players experience ALL content of each mod.\n\n"
                 "STRUCTURE:\n"
                 "1. Vanilla: 4-6 chapters, 10-15 quests each. Wood→Stone→Iron→Diamond→Enchant→Nether→Brew→End.\n"
                 "2. Each core mod: 1-2 chapters, 10-15 quests each. Cover from beginner to master.\n"
                 "3. Utility mods referenced in rewards only.\n"
-                "4. Total: 70-120 quests.\n\n"
+                f"4. Total: {quest_range} quests.\n\n"
                 "MAIN & BRANCH LINES:\n"
                 "- Main: chained via dependencies.\n"
                 "- Branches: no dependencies (or depend on 1 main node), players can do anytime.\n"
                 "- Each chapter: 2-3 branch quests minimum.\n\n"
                 "TASK RULES: item/advancement/kill/dimension/checkmark. Item IDs: minecraft: or listed namespaces.\n"
                 "Layout: x spaced 2.0 horizontal. Reward balanced by stage.\n\n"
-                "Output ONLY valid JSON, 70-120 quests total."
+                f"Output ONLY valid JSON, {quest_range} quests total."
             )
 
-    def _build_up(self, mod_list, all_ns, wiki_text="", item_catalog=""):
+    def _build_up(self, mod_list, all_ns, wiki_text="", item_catalog="", milestone_text=""):
         """构建用户提示词，item_catalog为空时生成不带物品ID的短版（用于缓存预热）"""
         if self.lang == "zh":
             wiki_block = f"{wiki_text}\n\n" if wiki_text else ""
@@ -583,42 +877,48 @@ class QuestBookGenerator:
                 "- 必须包含支线任务（无dependencies的独立任务）\n"
                 "- 严格使用上面列出的物品ID，不要编造不存在的ID\n"
                 "- 确保每个核心Mod都至少有一章\n"
-                "- 告诉玩家每一步做什么、用什么做、做完得到什么"
+                "- 告诉玩家每一步做什么、用什么做、做完得到什么\n\n"
+                f"{milestone_text}"
             )
         else:
             return (
                 f"{mod_list}\n\n=== Allowed namespaces ===\n{all_ns}\n\n"
                 f"{item_catalog}\n\n"
                 "Design a very rich questbook JSON with branches and main lines. "
-                "Use ONLY the item IDs listed above."
+                "Use ONLY the item IDs listed above.\n\n"
+                f"{milestone_text}"
             )
 
     def _generate_questbook(self, mod_list, all_ns, item_catalog="", wiki_text=""):
         """三级管道：Cache Warmup → Full Gen → Auto-Continue"""
-        sp = self._build_sp()
+        quest_range, max_continue = self._get_quest_config()
+        # 构建里程碑列表
+        milestones = _build_milestone_list(self.all_mods)
+        milestone_text = _milestone_to_prompt(milestones, self.lang)
+        sp = self._build_sp(quest_range)
         max_tok = self._calc_max_tokens()
-        max_continue = 3 if self.engine == "deepseek" else 1
 
-        # ── 第1级：Cache Warmup（仅DeepSeek，发送不含物品ID的短版提示词）──
-        if self.engine == "deepseek":
-            warmup_up = self._build_up(mod_list, all_ns, wiki_text, item_catalog="")
+        # ── 第1级：Cache Warmup（仅API引擎，发送不含物品ID的短版提示词）──
+        if self.engine in ("deepseek", "generic"):
+            warmup_up = self._build_up(mod_list, all_ns, wiki_text, item_catalog="", milestone_text="")
             warmup_messages = [
                 {"role": "system", "content": sp},
                 {"role": "user", "content": warmup_up + "\n\n请返回 {}，不需要生成任何实际内容。"}
             ]
             try:
-                # 预热用短超时（10秒），失败就跳过，不阻塞主流程
+                warmup_model = DEEPSEEK_MODEL if self.engine == "deepseek" else self.client.model
+                warmup_url = DEEPSEEK_API_URL if self.engine == "deepseek" else self.client.api_url
                 warmup_payload = {
-                    "model": DEEPSEEK_MODEL, "messages": warmup_messages,
+                    "model": warmup_model, "messages": warmup_messages,
                     "temperature": 0.1, "max_tokens": 16, "stream": False
                 }
-                requests.post(DEEPSEEK_API_URL, json=warmup_payload,
+                requests.post(warmup_url, json=warmup_payload,
                               headers=self.client.headers, timeout=10)
             except Exception:
                 pass  # 预热失败不阻塞主流程
 
         # ── 第2级：完整生成 + 第3级：Auto-Continue ──
-        full_up = self._build_up(mod_list, all_ns, wiki_text, item_catalog)
+        full_up = self._build_up(mod_list, all_ns, wiki_text, item_catalog, milestone_text)
         conversation = [{"role": "system", "content": sp},
                         {"role": "user", "content": full_up}]
         full_content = ""
@@ -715,7 +1015,41 @@ class QuestBookGenerator:
                 f.write("\n".join(report_lines))
             print(f"[VALIDATION] {fix_count} fixed, {len(unfixable)} unfixable — report saved")
 
+        # 给所有章节分配分组标签
+        self._annotate_chapter_groups(ai_data)
+
         return self._write_snbt_files(base_dir, ai_data)
+
+    def _reorganize_chapters(self, quest_json_text):
+        """提取并整理 JSON"""
+        json_text = self._extract_json(quest_json_text)
+        try:
+            ai_data = json.loads(json_text)
+        except json.JSONDecodeError:
+            return quest_json_text
+        return json.dumps(ai_data, ensure_ascii=False)
+
+    def _annotate_chapter_groups(self, ai_data):
+        """给每个章节分配 _group 字段（用于FTB Quests分组折叠）"""
+        for ch in ai_data.get("chapters", []):
+            if "_group" in ch:
+                continue
+            quests_in_ch = ch.get("quests", [])
+            namespace_counts = {}
+            for q in quests_in_ch:
+                item = _get_quest_primary_item(q)
+                if item and ":" in item:
+                    ns = item.split(":", 1)[0]
+                    namespace_counts[ns] = namespace_counts.get(ns, 0) + 1
+            mod_id = max(namespace_counts, key=namespace_counts.get) if namespace_counts else "unknown"
+            cat = _resolve_mod_category(mod_id) or "unknown"
+            if cat in ("tech", "magic", "world"):
+                group_key = cat
+            elif cat in ("decor", "food", "utility"):
+                group_key = "misc"
+            else:
+                group_key = "vanilla"
+            ch["_group"] = group_key
 
     def _write_snbt_files(self, base_dir, ai_data):
         chapters_dir = os.path.join(base_dir, "chapters")
@@ -838,7 +1172,7 @@ class QuestBookGenerator:
             # quest_links left empty — FTBQ auto-draws dependency lines
             cho = {
                 "default_hide_dependency_lines":False,"default_quest_shape":"","filename":chu,
-                "group":chu,"icon":chi_icon,"id":chu,"order_index":chi,
+                "group": ch.get("_group", chu), "icon":chi_icon,"id":chu,"order_index":chi,
                 "quest_links":[],"quests":qents,"title":cht,
             }
             # 章节图标回退
@@ -852,7 +1186,10 @@ class QuestBookGenerator:
                 chi_icon = "minecraft:wooden_pickaxe"
             cho["icon"] = chi_icon
             with open(os.path.join(chapters_dir,f"{chu}.snbt"),"w",encoding="utf-8") as f:f.write(to_snbt(cho))
-            chapter_groups.append({"id":chu,"title":cht})
+            group_key = ch.get("_group", chu)
+            if group_key not in [g.get("id") for g in chapter_groups]:
+                cfg = CHAPTER_GROUPS.get(group_key, {})
+                chapter_groups.append({"id": group_key, "title": cfg.get("title", group_key)})
         # 追加标记章节，提示玩家此为自动生成
         mark_chu = "ZZZZZZZZZZZZZZZZ"  # 固定ID，方便定位
         mark_cho = {
@@ -1005,13 +1342,15 @@ def _uid(): return uuid.uuid4().hex[:16]
 
 def generate_quest_book(api_key=None, selected_mods=None, mod_folder=None,
                          progress_callback=None, lang="zh", engine="deepseek",
-                         ollama_model=None, output_dir=None, use_wiki=False):
+                         ollama_model=None, output_dir=None, use_wiki=False,
+                         provider=None, api_url=None, api_model=None):
     if progress_callback: progress_callback("分析选中的Mod...",3)
     if not selected_mods: raise Exception("未选中任何Mod。")
     gen = QuestBookGenerator(
         api_key=api_key, selected_mods=selected_mods, mod_folder=mod_folder,
         progress_callback=progress_callback, lang=lang, engine=engine,
-        ollama_model=ollama_model
+        ollama_model=ollama_model, provider=provider,
+        api_url=api_url, api_model=api_model
     )
     gen.use_wiki = use_wiki
     return gen.generate(output_dir=output_dir)
@@ -1029,6 +1368,21 @@ def build_full_prompt(selected_mods, mod_folder=None, lang="zh"):
     scanned = gen._scan_items()
     item_cat = _ms.build_item_catalog_for_prompt(scanned, gen.all_mods)
 
+    # 动态任务数
+    mod_count = len(gen.prog_mods) + len(gen.unk)
+    if mod_count <= 5:
+        quest_range = "50-80"
+    elif mod_count <= 10:
+        quest_range = "80-150"
+    elif mod_count <= 20:
+        quest_range = "150-250"
+    elif mod_count <= 30:
+        quest_range = "250-350"
+    elif mod_count <= 50:
+        quest_range = "350-500"
+    else:
+        quest_range = "500-800"
+
     if lang == "zh":
         sp = (
             "你是Minecraft整合包「任务指南」设计师。为FTB Quests设计一份非常丰富的任务书JSON。\n\n"
@@ -1036,7 +1390,7 @@ def build_full_prompt(selected_mods, mod_folder=None, lang="zh"):
             "【结构要求】：\n"
             "1. 原版MC: 4-6章，每章10-15个任务。开局→石器→铁器→钻石→附魔→下界→酿造→末地。\n"
             "2. 每个核心Mod: 1-2章，每章10-15个任务。从入门到精通。\n"
-            "3. 辅助Mod在奖励中引用其物品。\n4. 总任务数: 70-120。\n\n"
+            "3. 辅助Mod在奖励中引用其物品。\n4. 总任务数: " + quest_range + "（含主线+支线）。\n\n"
             "【支线与主线】：主线用dependencies链串联所有任务。支线必须挂接主线节点（用dependencies引用主线ID），不能完全独立。每章2-3条支线。\n\n"
             "【坐标布局（非常重要）】：\n"
             "- 主线x: 0→2→4→6→8...，y统一为0\n"
@@ -1053,7 +1407,7 @@ def build_full_prompt(selected_mods, mod_folder=None, lang="zh"):
             '{"id":"q3","title":"石器工具","subtitle":"圆石→石镐","dependencies":["q2"],"icon":"minecraft:stone_pickaxe","tasks":[{"type":"item","target":"minecraft:stone_pickaxe","count":1}],"rewards":[{"type":"xp","count":20}],"shape":"square","x":4.0,"y":0.0},\n'
             '{"id":"q4","title":"制作熔炉","subtitle":"8圆石合成","dependencies":["q3"],"icon":"minecraft:furnace","tasks":[{"type":"item","target":"minecraft:furnace","count":1}],"rewards":[{"type":"xp","count":15}],"shape":"square","x":6.0,"y":0.0},\n'
             '{"id":"q5","title":"支线·解决食物","subtitle":"击杀动物获取食物","dependencies":["q2"],"icon":"minecraft:cooked_beef","tasks":[{"type":"item","target":"minecraft:cooked_beef","count":8}],"rewards":[{"type":"xp","count":15}],"shape":"diamond","x":2.0,"y":-2.0}\n]}\n]}\n\n'
-            "要求: 70-120总任务。所有title/subtitle用中文。每个任务必须有dependencies（除第一个外）。只输出JSON，json前后不要多余内容。"
+            "要求: " + quest_range + "总任务。所有title/subtitle用中文。每个任务必须有dependencies（除第一个外）。只输出JSON，json前后不要多余内容。"
         )
     else:
         sp = (
@@ -1061,20 +1415,26 @@ def build_full_prompt(selected_mods, mod_folder=None, lang="zh"):
             "Design a VERY RICH questbook JSON.\n\n"
             "STRUCTURE: 1. Vanilla: 4-6 ch, 10-15 quests each. "
             "2. Each core mod: 1-2 ch, 10-15 quests each. "
-            "3. Total: 70-120 quests. "
+            f"3. Total: {quest_range} quests. "
             "TASK TYPES: item/advancement/kill/dimension/checkmark. "
             "Layout: x spaced 2.0. Use ONLY the item IDs listed below.\n\n"
             "Output ONLY valid JSON."
         )
+    # 构建里程碑列表
+    milestones = _build_milestone_list(gen.all_mods if hasattr(gen, 'all_mods') else [])
+    milestone_text = _milestone_to_prompt(milestones, lang)
+
     up = (
         f"{mod_list}\n\n"
         f"=== 可用命名空间 ===\n{all_ns}\n\n"
         f"{item_cat}\n\n"
-        "请严格使用上面列出的物品ID。只输出JSON。"
+        "请严格使用上面列出的物品ID。只输出JSON。\n\n"
+        f"{milestone_text}"
     ) if lang == "zh" else (
         f"{mod_list}\n\n=== Namespaces ===\n{all_ns}\n\n"
         f"{item_cat}\n\n"
-        "Use ONLY the IDs above. Output ONLY JSON."
+        "Use ONLY the IDs above. Output ONLY JSON.\n\n"
+        f"{milestone_text}"
     )
     return sp + "\n\n" + up
 

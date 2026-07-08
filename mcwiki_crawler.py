@@ -68,73 +68,85 @@ def _scrape_mod(mod_id):
     """从 MC百科爬取 Mod 资料。任何错误都返回 None。"""
     try:
         session = _get_session()
-        search_url = f"https://api.mcmod.cn/v1/class/search?keyword={mod_id}"
+        # Step 1: 搜索 Mod，获取 class_id
+        # 新搜索地址
+        search_url = f"https://search.mcmod.cn/s?key={mod_id}"
+        session.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
         resp = session.get(search_url, timeout=REQUEST_TIMEOUT)
-        if resp.status_code != 200 or not resp.text.strip():
-            return _scrape_web(session, mod_id)
-
-        data = resp.json()
-        results = data.get("data", [])
-        if not results:
-            return _scrape_web(session, mod_id)
-
-        class_id = results[0].get("classid")
-        time.sleep(REQUEST_INTERVAL)
-
-        detail_url = f"https://api.mcmod.cn/v1/class/detail?classid={class_id}"
-        resp2 = session.get(detail_url, timeout=REQUEST_TIMEOUT)
-        if resp2.status_code != 200:
-            return _scrape_web(session, mod_id)
-
-        detail = resp2.json().get("data", {})
-        name = detail.get("name", "")
-        brief = detail.get("brief", "") or ""
-
-        items_text = ""
-        if detail.get("items"):
-            items_text = f"已知物品: {detail['items'][:300]}"
-
-        guide_text = ""
-        if detail.get("guide"):
-            guide_text = str(detail.get("guide", ""))[:2000]
-
-        if brief[:500]:
-            guide_text = brief[:500] + "\n" + guide_text
-
-        return {
-            "name": name or "",
-            "items_summary": items_text,
-            "guide_text": guide_text[:3000],
-        }
-    except Exception:
-        return None
-
-def _scrape_web(session, mod_id):
-    """回退方案：直接爬取网页"""
-    try:
-        url = f"https://www.mcmod.cn/class/{mod_id}.html"
-        resp = session.get(url, timeout=REQUEST_TIMEOUT)
         if resp.status_code != 200:
             return None
 
         html = resp.text
-        name_match = re.search(r"<title>(.+?)</title>", html)
-        name = name_match.group(1).replace(" - MC百科", "").strip() if name_match else ""
+        # 从搜索结果中提取第一个匹配的 class_id
+        class_ids = re.findall(r'/class/(\d+)\.html', html)
+        if not class_ids:
+            # 可能重定向到了详情页
+            class_ids = re.findall(r'/class/(\d+)\.html', html)
+        if not class_ids:
+            return None
 
+        class_id = class_ids[0]  # 第一个结果
+        name_match = re.search(r'<a[^>]*href="/class/' + class_id + r'\.html"[^>]*>([^<]+)</a>', html)
+        name = re.sub(r'<[^>]+>', '', name_match.group(1)).strip() if name_match else mod_id
+        time.sleep(REQUEST_INTERVAL)
+
+        # Step 2: 抓取详情页
+        detail_url = f"https://www.mcmod.cn/class/{class_id}.html"
+        resp2 = session.get(detail_url, timeout=REQUEST_TIMEOUT)
+        if resp2.status_code != 200:
+            return None
+
+        detail_html = resp2.text
+
+        # 提取简介（meta description）
         brief = ""
-        brief_match = re.search(r'<meta name="description" content="(.+?)"', html)
+        brief_match = re.search(r'<meta name="description" content="(.+?)"', detail_html)
         if brief_match:
             brief = re.sub(r'&[a-z]+;', '', brief_match.group(1))[:500]
 
+        # 提取玩法说明（common-text 内容区域）
         guide_text = ""
-        guide_match = re.search(r'class="common-text[^"]*".*?>(.{10,}?)</div>', html, re.DOTALL)
+        guide_match = re.search(r'class="common-text[^"]*"[^>]*>', detail_html)
         if guide_match:
-            guide_text = re.sub(r'<[^>]+>', '', guide_match.group(1)).strip()[:2000]
+            # 找到对应 div 后面的内容
+            start = guide_match.end()
+            # 收集内容直到遇到下一个同级别标签
+            content_parts = []
+            depth = 0
+            for m in re.finditer(r'<(div|p|ul|ol|li|h[1-6]|br|/?strong|/?b|/?i|/?u|/?a\b|/?span|/?font)[^>]*>|<!--.*?-->|</div>', detail_html[start:], re.DOTALL):
+                tag = m.group()
+                if tag.startswith('</div') or tag.startswith('<!--'):
+                    if tag.startswith('</div'):
+                        if depth <= 0:
+                            break
+                        depth -= 1
+                elif tag.startswith('<div'):
+                    depth += 1
+                content_parts.append(m.group())
+            if content_parts:
+                guide_text = re.sub(r'<[^>]+>', '', ''.join(content_parts)).strip()[:2000]
+
+        if not guide_text:
+            guide_match2 = re.search(r'class="common-text[^"]*"[^>]*>(.{10,}?)</div>', detail_html, re.DOTALL)
+            if guide_match2:
+                guide_text = re.sub(r'<[^>]+>', '', guide_match2.group(1)).strip()[:2000]
+
+        if not guide_text:
+            # 尝试整个内容区域
+            for cls in ["block-content", "class-content", "content-box", "article-content", "main-content"]:
+                gm = re.search(r'class="' + cls + r'[^"]*"[^>]*>', detail_html)
+                if gm:
+                    start = gm.end()
+                    end = detail_html.find('</div>', start)
+                    if end > start:
+                        guide_text = re.sub(r'<[^>]+>', '', detail_html[start:end]).strip()[:2000]
+                        if guide_text:
+                            break
 
         return {
-            "name": name,
+            "name": name or mod_id,
             "items_summary": "",
-            "guide_text": (brief + "\n" + guide_text) if guide_text else brief,
+            "guide_text": (brief[:300] + "\n" + guide_text) if guide_text else brief[:500],
         }
     except Exception:
         return None
@@ -170,3 +182,62 @@ def build_wiki_prompt_injections(all_mods, scanned_items=None):
 
     lines.insert(0, "=== MC百科 Mod 资料（供参考，帮助设计更准确的任务流程）===")
     return "\n".join(lines)
+
+# ═══════════════════════════════════════════════════
+# 玩法说明批量爬取 — 原始数据，供用户用 Ollama 自行提炼
+PLAYSTYLE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "playstyle_data")
+
+def fetch_mod_guide_raw(mod_id):
+    """
+    爬取单个 Mod 的玩法简介/机制说明（纯文本，不含格式）。
+    返回: str (原始简介文本) 或 None
+    """
+    wiki = fetch_mod_wiki(mod_id)
+    if not wiki:
+        return None
+    name = wiki.get("name", "") or mod_id
+    guide = wiki.get("guide_text", "") or ""
+    items = wiki.get("items_summary", "") or ""
+    parts = [f"Mod: {name} ({mod_id})"]
+    if guide:
+        parts.append(f"\n--- 玩法说明 ---\n{guide}")
+    if items:
+        parts.append(f"\n--- 物品摘要 ---\n{items}")
+    return "\n".join(parts)
+
+def batch_crawl_guides(mods_list, progress_callback=None):
+    """
+    批量爬取 Mod 玩法简介，保存原始文本到 playstyle_raw/。
+    mods_list: [{"mod_id": ..., "mod_name": ...}, ...]
+    返回: (成功数, 失败数)
+    """
+    raw_dir = os.path.join(PLAYSTYLE_DIR, "playstyle_raw")
+    os.makedirs(raw_dir, exist_ok=True)
+    ok, fail = 0, 0
+    total = len(mods_list)
+
+    for i, m in enumerate(mods_list):
+        mod_id = m.get("mod_id", "")
+        if not mod_id:
+            fail += 1
+            continue
+
+        if progress_callback:
+            progress_callback(f"爬取 {mod_id} ({i+1}/{total})...", None)
+
+        try:
+            text = fetch_mod_guide_raw(mod_id)
+            if text:
+                safe_name = mod_id.replace("/", "_").replace("\\", "_")
+                path = os.path.join(raw_dir, f"{safe_name}.txt")
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(text)
+                ok += 1
+            else:
+                fail += 1
+        except Exception:
+            fail += 1
+
+        time.sleep(REQUEST_INTERVAL)
+
+    return ok, fail
