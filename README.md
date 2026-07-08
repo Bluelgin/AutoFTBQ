@@ -103,7 +103,7 @@ python main.py
 .minecraft\versions\你的整合包\config\ftbquests\quests\
 ```
 
-重启游戏后，打开 FTB Quests 任务书即可看到生成的任务线。
+重进存档后，打开 FTB Quests 任务书即可看到生成的任务线。
 
 ---
 
