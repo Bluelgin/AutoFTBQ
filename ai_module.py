@@ -594,7 +594,7 @@ class GenericOpenAIClient:
 class QuestBookGenerator:
     def __init__(self, api_key=None, selected_mods=None, mod_folder=None,
                  progress_callback=None, lang="zh", engine="deepseek",
-                 ollama_model=None, provider=None, api_url=None, api_model=None):
+                 ollama_model=None, provider=None, api_url=None, api_model=None, max_output_tokens=None):
         # 根据引擎创建客户端
         self.engine = engine
         if engine == "ollama":
@@ -616,6 +616,7 @@ class QuestBookGenerator:
         self.prog_mods, self.util_mods, self.addon_mods, self.unk = classify_mods(selected_mods or [])
         self._all_items = None  # 扫描结果缓存
         self.use_wiki = False
+        self.max_output_tokens = max_output_tokens
 
     def _progress(self, msg, pct=None):
         if self.cb: self.cb(msg, pct)
@@ -735,6 +736,9 @@ class QuestBookGenerator:
 
     def _calc_max_tokens(self, is_continuation=False):
         """根据Mod数量动态计算max_tokens，6档精细化"""
+        # 如果用户自定义了max_output_tokens，直接使用
+        if getattr(self, "max_output_tokens", None) is not None:
+            return int(self.max_output_tokens)
         mod_count = len(self.prog_mods) + len(self.unk)
         if mod_count <= 5:
             base = 16384
@@ -750,11 +754,27 @@ class QuestBookGenerator:
             base = 131072
         if self.engine == "ollama":
             base = min(base, 49152 if is_continuation else 40960)
+        # 根据 density 调整 max_tokens
+        density_mult = {
+            "light": 0.7,
+            "medium": 1.0,
+            "rich": 1.5,
+            "max": 2.0,
+        }.get(getattr(self, "density", "medium"), 1.0)
+        if density_mult != 1.0:
+            base = int(base * density_mult)
         return base
 
     def _get_quest_config(self):
         """根据 Mod 数量动态返回 (quest_range_str, max_continue)"""
         mod_count = len(self.prog_mods) + len(self.unk)
+        # 根据 density 调整任务数量级别
+        density_mult = {
+            "light": 0.5,
+            "medium": 1.0,
+            "rich": 1.5,
+            "max": 2.5,
+        }.get(getattr(self, "density", "medium"), 1.0)
         if mod_count <= 5:
             quest_range, mc = "50-80", 3
         elif mod_count <= 10:
@@ -769,6 +789,14 @@ class QuestBookGenerator:
             quest_range, mc = "500-800", 10
         if self.engine == "ollama":
             mc = min(mc, 2)
+        # 根据 density 佘数调整任务数量范围
+        if density_mult != 1.0:
+            lo, hi = quest_range.split("-")
+            lo = int(int(lo) * density_mult)
+            hi = int(int(hi) * density_mult)
+            quest_range = f"{lo}-{hi}"
+            # 密度越高越需要续写
+            mc = int(mc * max(density_mult, 1.0))
         return quest_range, mc
 
     def _build_sp(self, quest_range="70-120"):
@@ -906,24 +934,30 @@ class QuestBookGenerator:
                         {"role": "user", "content": full_up}]
         full_content = ""
 
+        consecutive_empty = 0
         for _round in range(max_continue + 1):
             content, truncated = self.client.chat(
                 conversation, max_tokens=max_tok, temperature=0.5
             )
+            # 检测连续多次空响应 → 提前退出
+            if len(content.strip()) < 500:
+                consecutive_empty += 1
+                if consecutive_empty >= 3:
+                    print(f"[CONTINUE] Breaking after {consecutive_empty} consecutive small responses ({len(content.strip())} chars)")
+                    break
+            else:
+                consecutive_empty = 0
             if _round > 0:
-                full_content += "\n"
+                # Fix: truncated JSON may lack comma between concatenated parts
+                if full_content and full_content[-1] not in (",", "{", "[") and content and content[0] not in (",", "]", "}"):
+                    full_content += ","
             full_content += content
 
             # ── 检查是否需要续写 ──
             if not truncated:
-                extracted = self._extract_json(full_content)
-                try:
-                    json.loads(extracted)
-                    break  # ✅ 完整且有效
-                except json.JSONDecodeError:
-                    if _round >= max_continue:
-                        break  # 已达上限，后续有修复逻辑
-                    # API说完整但JSON解析失败 → 强制续写一轮
+                # API的 finish_reason="stop" → AI已写完，信任它
+                # 拼接瑕疵由 _save_snbt_files 的 repair 循环兜底
+                break
             else:
                 if _round >= max_continue:
                     break
@@ -932,15 +966,27 @@ class QuestBookGenerator:
             conversation.append({"role": "assistant", "content": content})
             if self.lang == "zh":
                 continuation_prompt = (
-                    "继续输出接下来的JSON任务数据。"
-                    "直接从上次中断的地方继续，不要重复已有内容，不要任何解释。"
-                    "只输出JSON数据，不要用markdown包裹。"
+                    "继续输出JSON。直接从上次中断处继续，不要重复，不要解释，不要markdown.\n\n"
+                    "[格式保持要点]\n"
+                    "- 结构: {\"title\":\"...\",\"chapters\":[{\"id\":\"...\",\"title\":\"...\",\"quests\":[...]}]}\n"
+                    "- 每个quest: id,title,tasks,rewards,dependencies(主线用),x,y\n"
+                    "- tasks中: type为item→需target+count, kill→需entity, advancement→需advancement\n"
+                    "- 坐标: 主线x=0,2,4... y=0；支线挂接主线节点，y偏移±2.0\n"
+                    "- 物品ID只能用已给出的命名空间(minecraft: 或已列出的modid)\n"
+                    "- 禁止出现任何markdown包裹、解释文字、重复已有章节/任务\n\n"
+                    "直接输出JSON，不要前缀。"
                 )
             else:
                 continuation_prompt = (
-                    "Continue outputting the JSON quest data. "
-                    "Start exactly where you left off. Do not repeat. "
-                    "Output ONLY JSON data, no markdown."
+                    "Continue JSON. Start where you left off. No repeats, no explanation, no markdown.\n\n"
+                    "[Format Reminders]\n"
+                    "- Structure: {\"title\":\"...\",\"chapters\":[{\"id\":\"...\",\"title\":\"...\",\"quests\":[...]}]}\n"
+                    "- Each quest: id, title, tasks, rewards, dependencies(main line), x, y\n"
+                    "- Tasks: type=item needs target+count, kill needs entity, advancement needs advancement\n"
+                    "- Coordinates: main line x=0,2,4... y=0; branch same x, y offset ±2.0\n"
+                    "- Item IDs: only use allowed namespaces (minecraft: or listed modids)\n"
+                    "- No markdown, no explanation text, no repeated chapters/quests\n\n"
+                    "Output JSON directly, no prefix."
                 )
             conversation.append({"role": "user", "content": continuation_prompt})
 
@@ -960,17 +1006,25 @@ class QuestBookGenerator:
         with open(os.path.join(base_dir,"ai_raw_output.txt"),"w",encoding="utf-8") as f:f.write(quest_json_text)
         json_text = self._merge_json_parts(quest_json_text)
         ai_data = None
-        for attempt in range(4):
+        for attempt in range(3):
             try:
-                ai_data = json.loads(json_text); break
+                ai_data = json.loads(json_text)
+                ai_data, _ = self._deduplicate_quests(ai_data)
+                break
             except json.JSONDecodeError:
-                if attempt==0: json_text = re.sub(r',\s*}','}',re.sub(r',\s*]',']',json_text))
-                elif attempt==1:
-                    d = sum(1 for c in json_text if c=='{') - sum(1 for c in json_text if c=='}')
-                    if d>0: json_text += '\n'+'}'*d
-                elif attempt==2:
-                    idx = json_text.rfind('\n    }\n')
-                    if idx>0: json_text = json_text[:idx]+'\n  ]\n}'
+                json_text = self._repair_json(json_text)
+        # AI二次审查：当常规修复无法解决时，用AI修复JSON结构错误
+        if ai_data is None and self.client is not None:
+            try:
+                print("[AI_REPAIR] Attempting AI repair for broken JSON...")
+                ai_data = self._ai_repair_json(json_text)
+                if ai_data is not None:
+                    ai_data, _ = self._deduplicate_quests(ai_data)
+                    print("[AI_REPAIR] AI repair succeeded!")
+            except Exception as e:
+                print(f"[AI_REPAIR] Error: {e}")
+                ai_data = None
+
         if ai_data is None:
             with open(os.path.join(base_dir,"parse_error.txt"),"w",encoding="utf-8") as f:
                 f.write(f"=== AI原始返回内容 ===\n{quest_json_text}\n\n=== 提取后的JSON ===\n{json_text}")
@@ -1216,56 +1270,101 @@ class QuestBookGenerator:
         with open(os.path.join(base_dir,"data.snbt"),"w",encoding="utf-8") as f:f.write(to_snbt(ds))
         return base_dir
 
-    def _merge_json_parts(self, raw_text):
-        """将多段续写返回的原始文本合并为一个完整的JSON字符串"""
-        # 策略1：直接尝试 _extract_json（兼容单段）
-        result = self._extract_json(raw_text)
+    
+
+    def _deduplicate_quests(self, ai_data):
+        """Remove duplicate quests within each chapter (by title and by ID)"""
+        removed = 0
+        for ch in ai_data.get("chapters", []):
+            quests = ch.get("quests", [])
+            seen_titles = set()
+            seen_ids = set()
+            unique = []
+            for q in quests:
+                qid = q.get("id", "")
+                title = q.get("title", "")
+                is_dup = False
+                if title and title in seen_titles:
+                    print(f"[DEDUP] Removing duplicate quest (same title): {title}")
+                    is_dup = True
+                elif qid and qid in seen_ids:
+                    print(f"[DEDUP] Removing duplicate quest (same id): {qid} ({title})")
+                    is_dup = True
+                if is_dup:
+                    removed += 1
+                else:
+                    if title:
+                        seen_titles.add(title)
+                    if qid:
+                        seen_ids.add(qid)
+                    unique.append(q)
+            ch["quests"] = unique
+        print(f"[DEDUP] Removed {removed} duplicate quests")
+        return ai_data, removed
+
+
+
+    def _ai_repair_json(self, broken_text):
+        """使用AI修复正则无法处理的JSON结构错误（如字符串内嵌括号）"""
+        if not self.client:
+            return None
+        # 截断过长的文本，避免超出上下文窗口
+        MAX_INPUT = 80000
+        input_text = broken_text[:MAX_INPUT] if len(broken_text) > MAX_INPUT else broken_text
+        if self.lang == "zh":
+            sys_prompt = "你是一个JSON修复专家。只修复语法错误，不改变任何数据内容。"
+            user_prompt = (
+                "修复下面FTB任务书JSON的语法错误。规则：\n"
+                "1. 只修复JSON语法错误（字符串未闭合、括号不匹配、逗号缺失/多余、换行符）\n"
+                "2. 不要删除、添加或修改任何章节、任务、物品ID、标题等数据\n"
+                "3. 保持所有文本原样\n"
+                "4. 只输出修复后的JSON，不要任何解释\n\n"
+                f"JSON：\n{input_text}"
+            )
+        else:
+            sys_prompt = "You are a JSON repair expert. Fix syntax errors only, do not change any data."
+            user_prompt = (
+                "Fix the JSON syntax errors below. Rules:\n"
+                "1. Only fix JSON syntax errors (unclosed strings, mismatched brackets, missing/extra commas)\n"
+                "2. Do not delete, add or modify any chapters, quests, item IDs, titles, etc.\n"
+                "3. Keep all text content as-is\n"
+                "4. Output ONLY the fixed JSON, no explanation\n\n"
+                f"JSON:\n{input_text}"
+            )
+        messages = [
+            {"role": "system", "content": sys_prompt},
+            {"role": "user", "content": user_prompt}
+        ]
+        max_out = min(int(len(input_text) * 1.3), 131072)
         try:
-            json.loads(result)
-            return result
-        except json.JSONDecodeError:
-            pass
+            result_text, _ = self.client.chat(messages, temperature=0.1, max_tokens=max_out)
+            fixed = self._extract_json(result_text)
+            return json.loads(fixed)
+        except Exception as e:
+            print(f"[AI_REPAIR] Failed: {e}")
+            return None
 
-        # 策略2：用栈追踪 {} 的平衡性，提取所有完整 JSON 片段
-        parts = []
-        i = 0
-        while i < len(raw_text):
-            if raw_text[i] == '{':
-                depth = 0
-                j = i
-                while j < len(raw_text):
-                    ch = raw_text[j]
-                    if ch == '{':
-                        depth += 1
-                    elif ch == '}':
-                        depth -= 1
-                        if depth == 0:
-                            parts.append(raw_text[i:j+1])
-                            i = j
-                            break
-                    j += 1
-            i += 1
+    def _merge_json_parts(self, raw_text):
+        """提取JSON文本（不重构章节，保留AI原始结构，由 _save_snbt_files 的 repair 循环兜底）"""
+        return self._extract_json(raw_text)
 
-        if not parts:
-            return result  # fallback to _extract_json result
+    def _repair_json(self, text):
+        """修复AI返回JSON的常见语法错误（缺失逗号、尾随逗号、缺括号）"""
+        text = re.sub(r',\s*}', '}', text)
+        text = re.sub(r',\s*]', ']', text)
+        text = re.sub(r'}\s*{', '},{', text)
+        text = re.sub(r']\s*{', '],{', text)
+        text = re.sub(r'}\s*\[', '},[', text)
+        text = re.sub(r']\s*\[', '],[', text)
+        d = sum(1 for c in text if c == '{') - sum(1 for c in text if c == '}')
+        a = sum(1 for c in text if c == '[') - sum(1 for c in text if c == ']')
+        if d > 0: text += '}' * d
+        if a > 0: text += ']' * a
+        # 4. fix invalid JSON escape sequences (e.g. \x, \a, truncated \u)
+        text = re.sub(r'\\(?=u(?:[0-9a-fA-F]{0,3}(?:[^0-9a-fA-F"\\\\]|$)))', r'\\\\', text)
+        text = re.sub(r'\\([^"\\\\/bfnrtu])', r'\\\\\1', text)
+        return text
 
-        if len(parts) == 1:
-            return parts[0]
-
-        # 策略3：以第一个完整 JSON 为主体，将其余部分的内容合并进去
-        main = json.loads(parts[0])
-        for extra_raw in parts[1:]:
-            try:
-                extra = json.loads(extra_raw)
-                if "chapters" in extra:
-                    main.setdefault("chapters", []).extend(extra["chapters"])
-                for k, v in extra.items():
-                    if k != "chapters":
-                        main[k] = v
-            except json.JSONDecodeError:
-                pass
-
-        return json.dumps(main, ensure_ascii=False)
 
     def _extract_json(self, text):
         if not text: return "{}"
@@ -1326,16 +1425,19 @@ def _uid(): return uuid.uuid4().hex[:16]
 def generate_quest_book(api_key=None, selected_mods=None, mod_folder=None,
                          progress_callback=None, lang="zh", engine="deepseek",
                          ollama_model=None, output_dir=None, use_wiki=False,
-                         provider=None, api_url=None, api_model=None):
+                         provider=None, api_url=None, api_model=None,
+                         density="medium", max_output_tokens=None):
     if progress_callback: progress_callback("分析选中的Mod...",3)
     if not selected_mods: raise Exception("未选中任何Mod。")
     gen = QuestBookGenerator(
         api_key=api_key, selected_mods=selected_mods, mod_folder=mod_folder,
         progress_callback=progress_callback, lang=lang, engine=engine,
         ollama_model=ollama_model, provider=provider,
-        api_url=api_url, api_model=api_model
+        api_url=api_url, api_model=api_model,
+        max_output_tokens=max_output_tokens
     )
     gen.use_wiki = use_wiki
+    gen.density = density
     return gen.generate(output_dir=output_dir)
 
 

@@ -321,6 +321,7 @@ class App:
         self.ollama_model_var = tk.StringVar(value=self.config.get("ollama_model", ""))
         self.output_dir_var = tk.StringVar(value=self.config.get("output_dir", ""))
         self.use_wiki_var = tk.BooleanVar(value=self.config.get("use_wiki", False))
+        self.max_output_tokens_var = tk.StringVar(value=self.config.get("max_output_tokens", ""))
         self.generating = False
         self.selected_mods = []
         self._detected_mods = []
@@ -379,6 +380,8 @@ class App:
         self.config["api_url"] = self.api_url_var.get().strip()
         self.config["api_model"] = self.api_model_var.get().strip()
         self.config["ollama_model"] = self.ollama_model_var.get()
+        self.config["density"] = self.density_var.get()
+        self.config["max_output_tokens"] = self.max_output_tokens_var.get().strip()
         self.config["output_dir"] = self.output_dir_var.get().strip()
         try:
             with open(CONFIG_PATH, "w", encoding="utf-8") as f: json.dump(self.config, f, ensure_ascii=False, indent=4)
@@ -581,6 +584,27 @@ class App:
         # ── Wiki 增强复选框 ──
         wiki_row = tk.Frame(mf, bg="#ffffff")
         wiki_row.pack(fill=tk.X, pady=(0, 6))
+        # ── 任务密度选择 ──
+        density_row = tk.Frame(mf, bg="#ffffff")
+        density_row.pack(fill=tk.X, pady=(0, 8))
+        tk.Label(density_row, text="任务密度:", font=("Microsoft YaHei", 9, "bold"), fg="#555555", bg="#ffffff").pack(side=tk.LEFT, padx=(0, 8))
+        self.density_var = tk.StringVar(value=self.config.get("density", "medium"))
+        for val, label in [("light", "精简"), ("medium", "适中"), ("rich", "丰富"), ("max", "拉满")]:
+            tk.Radiobutton(density_row, text=label, variable=self.density_var, value=val,
+                           font=("Microsoft YaHei", 9), fg="#555555", bg="#ffffff",
+                           activebackground="#ffffff", selectcolor="#ffffff",
+                           command=self._save_config).pack(side=tk.LEFT, padx=(0, 8))
+
+        # ── 最大 Token 数 ──
+        token_row = tk.Frame(mf, bg="#ffffff")
+        token_row.pack(fill=tk.X, pady=(0, 8))
+        tk.Label(token_row, text="最大Token数:", font=("Microsoft YaHei", 9, "bold"), fg="#555555", bg="#ffffff").pack(side=tk.LEFT, padx=(0, 8))
+        self.max_output_tokens_entry = tk.Entry(token_row, textvariable=self.max_output_tokens_var,
+                                                  font=("Microsoft YaHei", 9), bd=1, relief=tk.SOLID,
+                                                  fg="#555555", bg="#fafafa", width=12)
+        self.max_output_tokens_entry.pack(side=tk.LEFT)
+        tk.Label(token_row, text="(留空自动，例如32768)", font=("Microsoft YaHei", 8), fg="#aaaaaa", bg="#ffffff").pack(side=tk.LEFT, padx=(8, 0))
+
         self.use_wiki_check = tk.Checkbutton(wiki_row, text="使用 MC百科 Wiki 数据增强（需要网络）",
                                               variable=self.use_wiki_var, font=("Microsoft YaHei", 9),
                                               fg="#666666", bg="#ffffff", activebackground="#ffffff",
@@ -898,26 +922,32 @@ class App:
         self._save_config(); self.generating = True; self._lock_ui(True)
         self.set_info(t("preparing"), "info")
         mf = self.mod_folder_var.get().strip()
-        threading.Thread(target=self._generate_thread, args=(
-            api_key if engine != "ollama" else None,
-            list(self.selected_mods), LANG, engine,
-            self.ollama_model_var.get().strip(),
-            self.output_dir_var.get().strip() or None,
-            bool(self.use_wiki_var.get()),
-            self.provider_var.get(),
-            self.api_url_var.get().strip(),
-            self.api_model_var.get().strip(),
-        ), daemon=True).start()
+        threading.Thread(target=self._generate_thread, kwargs={
+            "api_key": api_key if engine != "ollama" else None,
+            "selected_mods": list(self.selected_mods),
+            "lang": LANG,
+            "engine": engine,
+            "ollama_model": self.ollama_model_var.get().strip(),
+            "output_dir": self.output_dir_var.get().strip() or None,
+            "use_wiki": bool(self.use_wiki_var.get()),
+            "provider": self.provider_var.get(),
+            "api_url": self.api_url_var.get().strip(),
+            "api_model": self.api_model_var.get().strip(),
+            "density": self.density_var.get(),
+            "max_output_tokens": int(self.max_output_tokens_var.get().strip()) if self.max_output_tokens_var.get().strip() else None,
+        }, daemon=True).start()
 
     def _generate_thread(self, api_key, selected_mods, lang, engine, ollama_model, output_dir, use_wiki=False,
-                         provider=None, api_url=None, api_model=None):
+                         provider=None, api_url=None, api_model=None, density="medium", max_output_tokens=None):
         try:
             mf = self.mod_folder_var.get().strip()
             out = generate_quest_book(
                 api_key=api_key, selected_mods=selected_mods,
                 mod_folder=mf, progress_callback=self._on_progress,
                 lang=lang, engine=engine, ollama_model=ollama_model, output_dir=output_dir,
-                use_wiki=use_wiki, provider=provider, api_url=api_url, api_model=api_model
+                use_wiki=use_wiki, provider=provider, api_url=api_url, api_model=api_model,
+                density=density,
+                max_output_tokens=max_output_tokens
             )
             self.root.after(0, self._on_done, out)
         except Exception as e: self.root.after(0, self._on_fail, str(e))

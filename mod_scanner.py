@@ -245,6 +245,35 @@ def build_item_catalog_for_prompt(all_items, selected_mods):
     for m in selected_mods:
         active_ns.add(m.get("mod_id", ""))
     active_ns.add("minecraft")
+    # 命名空间自动解析：若 MOD_DB 的 mod_id 与 JAR 实际命名空间不匹配，自动探测
+    # 例如 ae2 在 MOD_DB 中可能叫 appliedenergistics2，但 JAR 内部实际 namespace 是 ae2
+    resolved_active_ns = set()
+    for ns in sorted(active_ns, key=lambda x: (x == "minecraft", x)):  # minecraft 优先
+        if ns in all_items or ns == "minecraft":
+            resolved_active_ns.add(ns)
+        else:
+            match = None
+            # Level 1: 子串匹配 — ns 包含于某个实际 namespace，或反之
+            for key in all_items:
+                if ns in key or key in ns:
+                    match = key; break
+            # Level 2: 文件名匹配 — 用 JAR 文件名（去掉版本号）再尝试
+            if not match:
+                for m in selected_mods:
+                    fname = m.get("filename", "")
+                    fname_clean = re.sub(r'[-_]\d+[.]\d+[.]\d+.*$', '', fname)
+                    fname_clean = re.sub(r'[-_](mc|forge|fabric|release|alpha|beta).*$', '', fname_clean, flags=re.IGNORECASE)
+                    fname_clean = re.sub(r'[-_]\d+$', '', fname_clean).strip("-_ ")
+                    if fname_clean:
+                        fns = fname_clean.lower().replace("-", "").replace("_", "").replace(" ", "")
+                        for key in all_items:
+                            if fns in key or key in fns:
+                                match = key; break
+                    if match: break
+            resolved_active_ns.add(match or ns)
+            if match and match != ns:
+                print(f"[NS RESOLVE] {ns} \u2192 {match} (via {m.get('filename', '?')})")
+    active_ns = resolved_active_ns
 
     lines = ["=== 已验证的物品ID (请严格使用以下ID) ==="]
     lines.append("以下为从实际Mod文件中提取的物品ID，任务书中只能使用这些物品ID。\n")
@@ -329,25 +358,46 @@ def build_item_catalog_for_prompt(all_items, selected_mods):
     if len(mc_sorted) > 60:
         lines.append(f"    ... 以及其余 {len(mc_sorted) - 60} 个原版物品（使用标准 Minecraft ID 即可，如 minecraft:diamond_sword）")
 
-    # 各mod的物品 — 每个Mod最多列出50个
+    # 各mod的物品 — 过滤装饰品，全量展示功能物品
+    DECORATIVE_SUFFIXES = (
+        "_stairs", "_slab", "_wall", "_fence", "_gate",
+        "_pillar", "_window", "_pane", "_door", "_trapdoor",
+        "_seat", "_postbox", "_toolbox", "_table_cloth",
+        "_scaffolding", "_bars", "_banister", "_stool", "_chair",
+        "_cabinet", "_cabinet_open", "_sofa", "_bench",
+        "_canvas_sign", "_hanging_canvas_sign",
+        "_ladder", "_table", "_fence_gate",
+    )
+    # 已知装饰名但实际是功能物品的例外（不过滤）
+    FUNCTIONAL_OVERRIDES = {
+        "create:andesite_casing", "create:brass_casing",
+        "create:copper_casing", "create:railway_casing",
+    }
+
     for ns in sorted(active_ns):
         if ns == "minecraft":
             continue
         items = all_items.get(ns, {})
         if items:
+            # 过滤装饰品
             sorted_ids = sorted(items.keys())
-            display_count = min(len(sorted_ids), 50)
-            lines.append(f"\n  {ns} ({len(items)} items)，列出前{display_count}个:")
-            for i in range(0, display_count, 15):
-                chunk = sorted_ids[i:i+15]
+            functional_ids = [
+                iid for iid in sorted_ids
+                if iid in FUNCTIONAL_OVERRIDES or not any(
+                    iid.rsplit(":", 1)[-1].endswith(s) for s in DECORATIVE_SUFFIXES
+                )
+            ]
+            filtered_count = len(sorted_ids) - len(functional_ids)
+            lines.append(f"\n  {ns} ({len(functional_ids)} functional items)")
+            for i in range(0, len(functional_ids), 15):
+                chunk = functional_ids[i:i+15]
                 lines.append(f"    {', '.join(chunk)}")
-            if len(sorted_ids) > 50:
-                lines.append(f"    ... 以及其余 {len(sorted_ids) - 50} 个物品，均遵循 {ns}:item_name 格式")
+            if filtered_count > 0:
+                lines.append(f"    ... (过滤 {filtered_count} 个装饰类物品)")
         else:
             lines.append(f"\n  {ns}: (no items scanned from JAR — use commonly known IDs)")
 
-    lines.append("\n【重要】只使用以上列出的物品ID或遵循相同命名规律的ID。不要编造不存在的物品ID。")
-    lines.append("如果某个Mod的物品ID没有列出，可以推测使用 'modid:item_name' 格式（全小写，下划线分隔）。")
+    lines.append("\n【重要】只使用以上列出的物品ID。不要编造不存在的物品ID。")
     return "\n".join(lines)
 
 
