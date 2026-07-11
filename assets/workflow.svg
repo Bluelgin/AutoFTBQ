@@ -6,16 +6,16 @@
       <path d="M1 1 L10 6 L1 11" fill="none" stroke="#111" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
     </marker>
     <filter id="paper" x="-5%" y="-5%" width="110%" height="110%">
-      <feTurbulence type="fractalNoise" baseFrequency="0.012" numOctaves="2" seed="7" result="noise"/>
-      <feDisplacementMap in="SourceGraphic" in2="noise" scale="1.2"/>
+      <feTurbulence type="fractalNoise" baseFrequency="0.018" numOctaves="2" seed="7" result="noise"/>
+      <feDisplacementMap in="SourceGraphic" in2="noise" scale="3.4"/>
     </filter>
     <style>
-      .ink { fill: #fff; stroke: #111; stroke-width: 5; stroke-linejoin: round; }
+      .ink { fill: #fff; stroke: #111; stroke-width: 6; stroke-linejoin: round; }
       .line { fill: none; stroke: #111; stroke-width: 5; stroke-linecap: round; stroke-linejoin: round; marker-end: url(#arrow); }
-      .title { fill: #111; font-family: "KaiTi", "STKaiti", "Comic Sans MS", cursive; font-size: 34px; font-weight: 700; }
-      .label { fill: #111; font-family: "KaiTi", "STKaiti", "Comic Sans MS", cursive; font-size: 23px; font-weight: 700; text-anchor: middle; }
-      .small { fill: #111; font-family: "KaiTi", "STKaiti", "Comic Sans MS", cursive; font-size: 17px; text-anchor: middle; }
-      .note { fill: #111; font-family: "KaiTi", "STKaiti", "Comic Sans MS", cursive; font-size: 19px; }
+      .title { fill: #111; font-family: "Comic Sans MS", "KaiTi", "STKaiti", cursive; font-size: 34px; font-style: italic; font-weight: 700; }
+      .label { fill: #111; font-family: "Comic Sans MS", "KaiTi", "STKaiti", cursive; font-size: 23px; font-style: italic; font-weight: 700; text-anchor: middle; }
+      .small { fill: #111; font-family: "Comic Sans MS", "KaiTi", "STKaiti", cursive; font-size: 17px; font-style: italic; text-anchor: middle; }
+      .note { fill: #111; font-family: "Comic Sans MS", "KaiTi", "STKaiti", cursive; font-size: 19px; font-style: italic; }
     </style>
   </defs>
 
@@ -24,43 +24,43 @@
   <text x="600" y="62" class="title" text-anchor="middle">AutoFTBQ · 从整合包到任务书</text>
 
   <g filter="url(#paper)">
-    <path class="ink" d="M425 105 Q600 99 775 107 L768 185 Q600 193 432 184 Z"/>
+    <path class="ink" transform="rotate(-1.2 600 145)" d="M425 105 Q565 97 775 107 L768 185 Q620 197 432 184 Z"/>
     <text x="600" y="139" class="label">① 选择输入内容</text>
     <text x="600" y="166" class="small">整合包根目录 / mods / kubejs</text>
 
     <path class="line" d="M600 190 C600 213 600 220 600 240"/>
 
-    <path class="ink" d="M375 245 Q600 237 825 246 L818 338 Q600 347 382 337 Z"/>
+    <path class="ink" transform="rotate(0.8 600 295)" d="M375 245 Q535 235 825 246 L818 338 Q650 352 382 337 Z"/>
     <text x="600" y="282" class="label">② 扫描与整理</text>
     <text x="600" y="310" class="small">Mod · 物品 ID · 配方 · KubeJS 内容</text>
 
     <path class="line" d="M600 344 C600 365 600 373 600 392"/>
 
-    <path class="ink" d="M375 397 Q600 389 825 398 L818 490 Q600 499 382 489 Z"/>
+    <path class="ink" transform="rotate(-0.7 600 447)" d="M375 397 Q560 387 825 398 L818 490 Q610 505 382 489 Z"/>
     <text x="600" y="434" class="label">③ 选择生成方式</text>
     <text x="600" y="462" class="small">DeepSeek / 自定义 API / Ollama / 导入 JSON</text>
 
     <path class="line" d="M600 496 C600 518 600 525 600 545"/>
 
-    <path class="ink" d="M375 550 Q600 542 825 551 L818 643 Q600 652 382 642 Z"/>
+    <path class="ink" transform="rotate(1.1 600 600)" d="M375 550 Q545 540 825 551 L818 643 Q625 658 382 642 Z"/>
     <text x="600" y="587" class="label">④ 规划与生成</text>
     <text x="600" y="615" class="small">分阶段生成 · 任务密度配额 · 主线与支线</text>
 
     <path class="line" d="M600 649 C600 670 600 678 600 697"/>
 
-    <path class="ink" d="M375 702 Q600 694 825 703 L818 795 Q600 804 382 794 Z"/>
+    <path class="ink" transform="rotate(-0.9 600 752)" d="M375 702 Q565 691 825 703 L818 795 Q625 810 382 794 Z"/>
     <text x="600" y="739" class="label">⑤ 校验并输出</text>
     <text x="600" y="767" class="small">任务 ID · 依赖 · 坐标 · 物品 ID · SNBT</text>
   </g>
 
   <g filter="url(#paper)">
-    <path class="ink" d="M75 382 Q207 375 330 383 L324 510 Q203 519 82 509 Z"/>
+    <path class="ink" transform="rotate(-1.8 202 447)" d="M75 382 Q190 371 330 383 L324 510 Q190 523 82 509 Z"/>
     <text x="202" y="423" class="label">AI 自动生成</text>
     <text x="202" y="452" class="small">按配额分批调用</text>
     <text x="202" y="477" class="small">自动合并与修复</text>
     <path class="line" d="M330 447 C348 447 355 447 375 447"/>
 
-    <path class="ink" d="M870 382 Q997 375 1125 383 L1119 510 Q999 519 877 509 Z"/>
+    <path class="ink" transform="rotate(1.5 998 447)" d="M870 382 Q1005 371 1125 383 L1119 510 Q1005 523 877 509 Z"/>
     <text x="998" y="423" class="label">导入 JSON</text>
     <text x="998" y="452" class="small">网页 AI 生成</text>
     <text x="998" y="477" class="small">粘贴后转换 SNBT</text>
