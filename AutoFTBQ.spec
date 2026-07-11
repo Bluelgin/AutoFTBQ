@@ -2,11 +2,12 @@
 
 import os
 from PyInstaller.building.datastruct import Tree
+from PyInstaller.utils.hooks.tcl_tk import TclTkInfo
 
-tcl_root = r'C:\Users\Administrator\AppData\Local\Python\pythoncore-3.14-64\tcl'
 dll_root = r'C:\Users\Administrator\AppData\Local\Python\pythoncore-3.14-64\DLLs'
 tkinter_root = r'C:\Users\Administrator\AppData\Local\Python\pythoncore-3.14-64\Lib\tkinter'
-tcl_datas = [(src, os.path.dirname(dest)) for dest, src, _ in Tree(tcl_root, prefix='tcl')]
+tk_info = TclTkInfo()
+tcl_datas = [(src, os.path.dirname(dest)) for dest, src, _ in tk_info.data_files]
 tkinter_datas = [(src, os.path.dirname(dest)) for dest, src, _ in Tree(tkinter_root, prefix='tkinter')]
 
 a = Analysis(
