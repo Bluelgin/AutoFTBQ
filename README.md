@@ -22,7 +22,7 @@
 - 支持直接生成，也支持导入网页 AI 生成的 JSON。
 - 支持中文和英文界面，以及自定义输出目录。
 
-> 目前稳定版主要支持 DeepSeek 和 Ollama。其他 OpenAI 兼容服务商的接入正在完善中，暂时不要把开发中的第三方 API 功能当作正式版功能使用。
+> 目前稳定版支持 DeepSeek、Ollama，以及手动配置的 OpenAI 兼容 API。第三方服务没有统一的模型列表和错误格式，所以自定义 API 需要用户自己填写并确认参数。
 
 ## 下载和安装
 
@@ -50,9 +50,45 @@ Windows 用户也可以运行仓库中的 `start.bat`。
 适合想让软件自动完成任务规划的人。当前支持：
 
 - DeepSeek API：联网使用，需要 API Key。
+- 自定义 API：支持 OpenAI Chat Completions 格式的第三方服务，需要自己填写接口地址和模型名。
 - Ollama：模型运行在本地，不需要 API Key，但需要电脑有足够的显存或内存。
 
 软件启动后会检测 Ollama。如果检测到可用模型，通常会优先使用本地引擎；也可以在界面中切回 API 模式。
+
+### 自定义 API 怎么填
+
+如果你使用的是 OpenAI、SiliconFlow、各种中转站，或者本地运行的 OpenAI 兼容服务，可以在 API 模式中选择服务商 `custom`，然后手动填写：
+
+| 输入项 | 填写内容 |
+|---|---|
+| API Key | 服务商提供的密钥；本地服务如果不校验密钥，也可以填写任意非空内容 |
+| 自定义 URL | 完整的 Chat Completions 地址，通常以 `/chat/completions` 结尾 |
+| 模型 | 服务商实际提供的模型 ID，必须和接口支持的名称完全一致 |
+
+例如，OpenAI 兼容接口通常类似这样：
+
+```text
+API URL: https://example.com/v1/chat/completions
+模型: your-model-id
+```
+
+本地代理也可以这样填写：
+
+```text
+API URL: http://127.0.0.1:1234/v1/chat/completions
+模型: local-model-name
+```
+
+这里的 URL 不是网页地址，也不是只到 `/v1` 的基础地址，最好直接填写完整的 `/chat/completions` 接口。
+
+自定义 API 目前不会自动读取模型列表，也不会替你判断服务商是否真的支持 OpenAI 格式。你需要从服务商文档或控制台确认以下内容：
+
+- 请求方式是 `POST`。
+- 接口接受 `model`、`messages`、`temperature` 和 `max_tokens` 等字段。
+- 返回结果中存在 `choices[0].message.content`。
+- API Key 使用 `Authorization: Bearer <API Key>` 传递。
+
+如果生成时报 400、404 或模型不存在，优先检查 URL 是否多写或少写了路径，以及模型 ID 是否填写正确。配置会保存在本地 `config.json` 中，下次启动时会保留。
 
 ### 导入 JSON
 
