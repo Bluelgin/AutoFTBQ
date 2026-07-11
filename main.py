@@ -16,6 +16,7 @@ CONFIG_PATH = os.path.join(SCRIPT_DIR, "config.json")
 AI_AVAILABLE = False; AI_IMPORT_ERROR = ""
 scan_mod_folder = None; generate_quest_book = None
 build_full_prompt = None; import_json_to_snbt = None
+normalize_provider = None; fetch_provider_models = None; PROVIDER_PRESETS = {}
 
 LANG = "zh"
 
@@ -126,6 +127,7 @@ def t(key, *args):
 def _check_deps():
     global AI_AVAILABLE, AI_IMPORT_ERROR, scan_mod_folder, generate_quest_book
     global build_full_prompt, import_json_to_snbt
+    global normalize_provider, fetch_provider_models, PROVIDER_PRESETS
     try: import requests
     except ImportError: AI_IMPORT_ERROR = t("dep_msg"); return False
     try:
@@ -135,6 +137,9 @@ def _check_deps():
         generate_quest_book = ai_module.generate_quest_book
         build_full_prompt = ai_module.build_full_prompt
         import_json_to_snbt = ai_module.import_json_to_snbt
+        normalize_provider = ai_module.normalize_provider
+        fetch_provider_models = ai_module.fetch_provider_models
+        PROVIDER_PRESETS = ai_module.PROVIDER_PRESETS
         AI_AVAILABLE = True; return True
     except Exception as e: AI_IMPORT_ERROR = str(e); return False
 
@@ -315,9 +320,10 @@ class App:
         self.api_key_var = tk.StringVar(value=self.config.get("api_key", ""))
         self.mod_folder_var = tk.StringVar(value=self.config.get("mod_folder", ""))
         self.engine_var = tk.StringVar(value=self.config.get("engine", "deepseek"))
-        self.provider_var = tk.StringVar(value=self.config.get("provider", "deepseek"))
+        self.provider_var = tk.StringVar(value=self.config.get("provider", "DeepSeek"))
         self.api_url_var = tk.StringVar(value=self.config.get("api_url", ""))
         self.api_model_var = tk.StringVar(value=self.config.get("api_model", ""))
+        self._fetched_models = []  # 缓存已获取的模型列表
         self.ollama_model_var = tk.StringVar(value=self.config.get("ollama_model", ""))
         self.output_dir_var = tk.StringVar(value=self.config.get("output_dir", ""))
         self.use_wiki_var = tk.BooleanVar(value=self.config.get("use_wiki", False))
@@ -353,6 +359,13 @@ class App:
 
     def _on_startup_checked(self, ok):
         global ollama_available, ollama_best_model
+        # 依赖加载完成后，标准化 provider 并刷新 Combobox
+        if ok and normalize_provider:
+            prov = normalize_provider(self.provider_var.get())
+            self.provider_var.set(prov)
+            if hasattr(self, 'provider_combo'):
+                self.provider_combo['values'] = list(PROVIDER_PRESETS.keys())
+                self._on_provider_change()
         if ollama_available and ollama_best_model:
             self.engine_var.set("ollama")
             self.ollama_model_var.set(ollama_best_model)
@@ -455,6 +468,118 @@ class App:
             self.ollama_status_label.config(text="")
             self.api_frame.pack(before=self.engine_frame, fill=tk.X, pady=(0, 15))
             self.provider_frame.pack(before=self.api_frame, fill=tk.X, pady=(0, 6))
+            self._on_provider_change()
+
+    def _on_provider_change(self):
+        """供应商切换时：更新URL字段状态、清空模型列表、设置默认模型"""
+        provider = self.provider_var.get()
+        is_custom = (provider == "第三方自定义")
+        preset = PROVIDER_PRESETS.get(provider, {})
+
+        # URL 字段：预设服务商只读显示预设URL，第三方自定义时可编辑
+        if is_custom:
+            # 第三方自定义：清空URL让用户输入
+            if not self.api_url_var.get().strip() or any(
+                self.api_url_var.get().strip() == p.get("chat_url", "")
+                for p in PROVIDER_PRESETS.values()
+            ):
+                self.api_url_var.set("")
+            self.api_url_entry.config(state=tk.NORMAL, bg="#ffffff", fg="#333333")
+            self.api_url_label.config(text="API URL:", fg="#555555")
+            self.api_url_hint_label.config(text="填写 OpenAI 兼容的 chat/completions 接口地址", fg="#888888")
+        else:
+            # 预设服务商：自动填入URL并设为只读
+            chat_url = preset.get("chat_url", "")
+            self.api_url_var.set(chat_url)
+            self.api_url_entry.config(state="readonly", readonlybackground="#f5f5f5", fg="#888888")
+            self.api_url_label.config(text="API URL (预设):", fg="#888888")
+            self.api_url_hint_label.config(text="", fg="#aaaaaa")
+
+        # 模型：预设服务商填入默认模型，第三方自定义清空
+        if not is_custom:
+            default_model = preset.get("model", "")
+            if default_model and not self.api_model_var.get().strip():
+                self.api_model_var.set(default_model)
+        else:
+            # 如果当前模型是某个预设的默认模型，清空
+            cur_model = self.api_model_var.get().strip()
+            if cur_model and any(cur_model == p.get("model", "") for p in PROVIDER_PRESETS.values()):
+                self.api_model_var.set("")
+
+        # 清空已获取的模型列表
+        self._fetched_models = []
+        if hasattr(self, 'api_model_combo'):
+            self.api_model_combo['values'] = []
+        if hasattr(self, 'model_fetch_label'):
+            self.model_fetch_label.config(text="", fg="#aaaaaa")
+
+        self._save_config()
+
+        # 如果已有API Key且非自定义，自动获取模型列表
+        if not is_custom and self.api_key_var.get().strip():
+            self._on_fetch_models()
+
+    def _on_fetch_models(self):
+        """从服务商API获取可用模型列表"""
+        if not fetch_provider_models:
+            messagebox.showwarning("提示", "依赖未加载完成，请稍后再试。")
+            return
+        provider = self.provider_var.get()
+        is_custom = (provider == "第三方自定义")
+        api_key = self.api_key_var.get().strip()
+        if not api_key:
+            messagebox.showwarning("提示", "请先填写 API Key。")
+            return
+
+        # 确定models_url
+        if is_custom:
+            # 第三方自定义：从 chat_url 推导 models_url
+            chat_url = self.api_url_var.get().strip()
+            if not chat_url:
+                messagebox.showwarning("提示", "请先填写 API URL。")
+                return
+            # 推导：将 .../chat/completions → .../models
+            models_url = chat_url
+            if models_url.endswith("/chat/completions"):
+                models_url = models_url[:-len("/chat/completions")] + "/models"
+            elif models_url.endswith("/v1"):
+                models_url = models_url + "/models"
+        else:
+            preset = PROVIDER_PRESETS.get(provider, {})
+            models_url = preset.get("models_url", "")
+
+        if not models_url:
+            messagebox.showwarning("提示", "无法确定模型列表接口URL。")
+            return
+
+        self.model_fetch_label.config(text="正在获取模型列表...", fg="#ff9800")
+        self.fetch_models_btn.config(state=tk.DISABLED)
+
+        def _fetch_thread():
+            models, err = fetch_provider_models(api_key, models_url)
+            self.root.after(0, self._on_models_fetched, models, err)
+
+        threading.Thread(target=_fetch_thread, daemon=True).start()
+
+    def _on_models_fetched(self, models, err):
+        self.fetch_models_btn.config(state=tk.NORMAL)
+        if err:
+            self.model_fetch_label.config(text=f"❌ {err}", fg="#f44336")
+            if models:
+                self.api_model_combo['values'] = models
+                self._fetched_models = models
+            return
+        if not models:
+            self.model_fetch_label.config(text="⚠ 未获取到模型", fg="#ff9800")
+            return
+        self._fetched_models = models
+        self.api_model_combo['values'] = models
+        # 如果当前模型为空或不在列表中，选第一个
+        cur = self.api_model_var.get().strip()
+        if not cur or cur not in models:
+            self.api_model_var.set(models[0])
+        count = len(models)
+        self.model_fetch_label.config(text=f"✓ 获取到 {count} 个模型，可直接输入模型ID", fg="#4caf50")
 
     def _build_ui(self):
         try:
@@ -466,7 +591,7 @@ class App:
 
         # 窗口大小根据模式调整
         if self.mode == "api":
-            self.root.geometry("780x850")
+            self.root.geometry("780x920")
         else:
             self.root.geometry("680x780")
 
@@ -540,6 +665,7 @@ class App:
         self.api_entry = tk.Entry(row, textvariable=self.api_key_var, font=df, show="*", bd=1, relief=tk.SOLID, fg="#333333", bg="#f5f5f5")
         self.api_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=6)
         self.api_entry.bind("<KeyRelease>", lambda e: self._check_config_ready())
+        self.api_entry.bind("<Return>", lambda e: self._on_fetch_models() if self.provider_var.get() != "第三方自定义" else None)
         self.show_btn = tk.Button(row, font=sf, width=5, command=self._toggle_key_vis, bg="#f0f0f0", fg="#555555", bd=1, relief=tk.SOLID, cursor="hand2", activebackground="#e0e0e0")
         self.show_btn.pack(side=tk.RIGHT, padx=(6, 0))
         self._key_visible = False
@@ -565,21 +691,48 @@ class App:
         # ── API 服务商选择（仅 API 模式） ──
         self.provider_frame = tk.Frame(mf, bg="#ffffff")
         self.provider_frame.pack(fill=tk.X, pady=(0, 8))
-        tk.Label(self.provider_frame, text="服务商:", font=("Microsoft YaHei", 9, "bold"), fg="#555555", bg="#ffffff").pack(side=tk.LEFT, padx=(0, 8))
-        self.provider_combo = ttk.Combobox(self.provider_frame, textvariable=self.provider_var,
-                                            values=["deepseek", "custom"],
-                                            state="readonly", width=14, font=("Microsoft YaHei", 9))
+
+        # Row 1: 服务商
+        prov_row1 = tk.Frame(self.provider_frame, bg="#ffffff")
+        prov_row1.pack(fill=tk.X, pady=(0, 4))
+        tk.Label(prov_row1, text="服务商:", font=("Microsoft YaHei", 9, "bold"),
+                 fg="#555555", bg="#ffffff").pack(side=tk.LEFT, padx=(0, 8))
+        self.provider_combo = ttk.Combobox(prov_row1, textvariable=self.provider_var,
+                                            values=list(PROVIDER_PRESETS.keys()),
+                                            state="readonly", width=20, font=("Microsoft YaHei", 9))
         self.provider_combo.pack(side=tk.LEFT)
-        tk.Label(self.provider_frame, text="自定义URL:", font=("Microsoft YaHei", 9), fg="#888888", bg="#ffffff").pack(side=tk.LEFT, padx=(12, 4))
-        self.api_url_entry = tk.Entry(self.provider_frame, textvariable=self.api_url_var,
+        self.provider_combo.bind("<<ComboboxSelected>>", lambda e: self._on_provider_change())
+
+        # Row 2: API URL（仅第三方自定义时可编辑）
+        prov_row2 = tk.Frame(self.provider_frame, bg="#ffffff")
+        prov_row2.pack(fill=tk.X, pady=(0, 4))
+        self.api_url_label = tk.Label(prov_row2, text="API URL:", font=("Microsoft YaHei", 9),
+                                       fg="#888888", bg="#ffffff")
+        self.api_url_label.pack(side=tk.LEFT, padx=(0, 4))
+        self.api_url_entry = tk.Entry(prov_row2, textvariable=self.api_url_var,
                                        font=("Microsoft YaHei", 9), bd=1, relief=tk.SOLID,
-                                       fg="#555555", bg="#fafafa", width=18)
-        self.api_url_entry.pack(side=tk.LEFT)
-        tk.Label(self.provider_frame, text="模型:", font=("Microsoft YaHei", 9), fg="#888888", bg="#ffffff").pack(side=tk.LEFT, padx=(8, 4))
-        self.api_model_entry = tk.Entry(self.provider_frame, textvariable=self.api_model_var,
-                                          font=("Microsoft YaHei", 9), bd=1, relief=tk.SOLID,
-                                          fg="#555555", bg="#fafafa", width=14)
-        self.api_model_entry.pack(side=tk.LEFT)
+                                       fg="#555555", bg="#fafafa")
+        self.api_url_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.api_url_hint_label = tk.Label(prov_row2, text="", font=("Microsoft YaHei", 8),
+                                            fg="#aaaaaa", bg="#ffffff")
+        self.api_url_hint_label.pack(side=tk.LEFT, padx=(6, 0))
+
+        # Row 3: 模型选择（下拉 + 手动输入 + 刷新按钮）
+        prov_row3 = tk.Frame(self.provider_frame, bg="#ffffff")
+        prov_row3.pack(fill=tk.X, pady=(0, 2))
+        tk.Label(prov_row3, text="模型:", font=("Microsoft YaHei", 9),
+                 fg="#888888", bg="#ffffff").pack(side=tk.LEFT, padx=(0, 4))
+        self.api_model_combo = ttk.Combobox(prov_row3, textvariable=self.api_model_var,
+                                            values=[], state="normal", width=28,
+                                            font=("Microsoft YaHei", 9))
+        self.api_model_combo.pack(side=tk.LEFT)
+        self.fetch_models_btn = tk.Button(prov_row3, text="🔄 刷新模型列表", font=("Microsoft YaHei", 8),
+                                           command=self._on_fetch_models, bg="#e8f5e9", fg="#2e7d32",
+                                           bd=1, relief=tk.SOLID, cursor="hand2", padx=8, pady=2)
+        self.fetch_models_btn.pack(side=tk.LEFT, padx=(6, 0))
+        self.model_fetch_label = tk.Label(prov_row3, text="", font=("Microsoft YaHei", 8),
+                                           fg="#aaaaaa", bg="#ffffff")
+        self.model_fetch_label.pack(side=tk.LEFT, padx=(8, 0))
 
         # ── Wiki 增强复选框 ──
         wiki_row = tk.Frame(mf, bg="#ffffff")
@@ -797,6 +950,23 @@ class App:
             self.select_mods_btn.config(state=s)
             if hasattr(self, 'save_prompt_api_btn'):
                 self.save_prompt_api_btn.config(state=s)
+            # 锁定供应商/模型相关控件
+            if hasattr(self, 'provider_combo'):
+                self.provider_combo.config(state="readonly" if not locked else tk.DISABLED)
+            if hasattr(self, 'api_model_combo'):
+                self.api_model_combo.config(state="readonly" if not locked else tk.DISABLED)
+            if hasattr(self, 'fetch_models_btn'):
+                self.fetch_models_btn.config(state=s)
+            # URL 字段：解锁时恢复到供应商对应的状态
+            if hasattr(self, 'api_url_entry'):
+                if locked:
+                    self.api_url_entry.config(state=tk.DISABLED)
+                else:
+                    provider = self.provider_var.get()
+                    if provider == "第三方自定义":
+                        self.api_url_entry.config(state=tk.NORMAL)
+                    else:
+                        self.api_url_entry.config(state="readonly", readonlybackground="#f5f5f5")
         except Exception: pass
         if locked:
             if hasattr(self, 'generate_btn'):
@@ -922,16 +1092,23 @@ class App:
         self._save_config(); self.generating = True; self._lock_ui(True)
         self.set_info(t("preparing"), "info")
         mf = self.mod_folder_var.get().strip()
+        # API 模式统一使用 generic 引擎（通过 GenericOpenAIClient 支持所有 OpenAI 兼容服务商）
+        actual_engine = "generic" if engine == "deepseek" else engine
+        # 第三方自定义时需要传入 api_url；预设服务商时 ai_module 会自动用 preset 的 chat_url
+        provider = self.provider_var.get()
+        api_url_val = self.api_url_var.get().strip()
+        if provider != "第三方自定义":
+            api_url_val = ""  # 让 ai_module 用 preset 的 URL
         threading.Thread(target=self._generate_thread, kwargs={
             "api_key": api_key if engine != "ollama" else None,
             "selected_mods": list(self.selected_mods),
             "lang": LANG,
-            "engine": engine,
+            "engine": actual_engine,
             "ollama_model": self.ollama_model_var.get().strip(),
             "output_dir": self.output_dir_var.get().strip() or None,
             "use_wiki": bool(self.use_wiki_var.get()),
-            "provider": self.provider_var.get(),
-            "api_url": self.api_url_var.get().strip(),
+            "provider": provider,
+            "api_url": api_url_val,
             "api_model": self.api_model_var.get().strip(),
             "density": self.density_var.get(),
             "max_output_tokens": int(self.max_output_tokens_var.get().strip()) if self.max_output_tokens_var.get().strip() else None,

@@ -556,9 +556,99 @@ class DeepSeekClient:
 
 # ════════════════════════════════════════════════════════
 # 通用 OpenAI 兼容客户端
+# 预设服务商：chat_url = 聊天接口, models_url = 模型列表接口, model = 默认模型
 PROVIDER_PRESETS = {
-    "deepseek": {"url": "https://api.deepseek.com/chat/completions", "model": "deepseek-v4-flash"},
+    "DeepSeek": {
+        "chat_url": "https://api.deepseek.com/chat/completions",
+        "models_url": "https://api.deepseek.com/models",
+        "model": "deepseek-chat",
+    },
+    "OpenAI": {
+        "chat_url": "https://api.openai.com/v1/chat/completions",
+        "models_url": "https://api.openai.com/v1/models",
+        "model": "gpt-4o",
+    },
+    "Gemini": {
+        "chat_url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+        "models_url": "https://generativelanguage.googleapis.com/v1beta/openai/models",
+        "model": "gemini-1.5-pro",
+    },
+    "Moonshot": {
+        "chat_url": "https://api.moonshot.cn/v1/chat/completions",
+        "models_url": "https://api.moonshot.cn/v1/models",
+        "model": "moonshot-v1-8k",
+    },
+    "Zhipu": {
+        "chat_url": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+        "models_url": "https://open.bigmodel.cn/api/paas/v4/models",
+        "model": "glm-4",
+    },
+    "Qwen": {
+        "chat_url": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+        "models_url": "https://dashscope.aliyuncs.com/compatible-mode/v1/models",
+        "model": "qwen-plus",
+    },
+    "SiliconFlow": {
+        "chat_url": "https://api.siliconflow.cn/v1/chat/completions",
+        "models_url": "https://api.siliconflow.cn/v1/models",
+        "model": "deepseek-ai/DeepSeek-V3",
+    },
+    "Volcengine": {
+        "chat_url": "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
+        "models_url": "https://ark.cn-beijing.volces.com/api/v3/models",
+        "model": "doubao-pro-32k",
+    },
+    "第三方自定义": {},
 }
+
+# 旧 key → 新 key 的迁移映射
+_PROVIDER_LEGACY_KEYS = {
+    "deepseek": "DeepSeek",
+    "custom": "第三方自定义",
+}
+
+def normalize_provider(provider):
+    """将旧版 provider key 迁移到新 key，未知值回退到 DeepSeek"""
+    if not provider:
+        return "DeepSeek"
+    if provider in PROVIDER_PRESETS:
+        return provider
+    return _PROVIDER_LEGACY_KEYS.get(provider, "DeepSeek")
+
+
+def fetch_provider_models(api_key, models_url, timeout=15):
+    """
+    从 OpenAI 兼容的 /models 接口获取可用模型列表。
+    返回 (models_list, error_message)：成功时 error_message 为 None。
+    """
+    if not api_key or not api_key.strip():
+        return [], "请先填写 API Key"
+    if not models_url:
+        return [], "未配置模型列表接口 URL"
+    headers = {"Authorization": f"Bearer {api_key.strip()}", "Content-Type": "application/json"}
+    try:
+        resp = requests.get(models_url, headers=headers, timeout=timeout)
+        if resp.status_code == 200:
+            data = resp.json()
+            models = []
+            for m in data.get("data", []):
+                mid = m.get("id") if isinstance(m, dict) else None
+                if mid:
+                    models.append(mid)
+            models.sort()
+            return models, None
+        elif resp.status_code == 401:
+            return [], "API Key 无效"
+        elif resp.status_code == 403:
+            return [], "无权访问模型列表（403）"
+        else:
+            return [], f"HTTP {resp.status_code}: {resp.text[:150]}"
+    except requests.exceptions.Timeout:
+        return [], "请求超时，请检查网络"
+    except requests.exceptions.ConnectionError:
+        return [], "无法连接服务器，请检查网络或 URL"
+    except Exception as e:
+        return [], f"获取模型失败: {e}"
 
 class GenericOpenAIClient:
     """兼容 OpenAI 格式的通用 API 客户端"""
@@ -603,8 +693,9 @@ class QuestBookGenerator:
         elif engine == "dummy":
             self.client = None  # 不调用API，仅用于SNBT转换
         elif engine == "generic":
-            presets = PROVIDER_PRESETS.get(provider or "deepseek", {})
-            final_url = api_url or presets.get("url", "https://api.deepseek.com/chat/completions")
+            prov = normalize_provider(provider)
+            presets = PROVIDER_PRESETS.get(prov, {})
+            final_url = api_url or presets.get("chat_url", "https://api.deepseek.com/chat/completions")
             final_model = api_model or presets.get("model", "deepseek-chat")
             self.client = GenericOpenAIClient(api_key or "", final_url, final_model)
         else:
