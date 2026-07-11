@@ -24,6 +24,12 @@
 
 > 目前稳定版支持 DeepSeek、Ollama，以及手动配置的 OpenAI 兼容 API。第三方服务没有统一的模型列表和错误格式，所以自定义 API 需要用户自己填写并确认参数。
 
+## 软件工作流程
+
+下面这张图概括了 AutoFTBQ 从读取整合包到生成任务书的完整流程：
+
+![AutoFTBQ 软件工作流程图](assets/workflow.svg)
+
 ## 下载和安装
 
 ### 直接使用 exe

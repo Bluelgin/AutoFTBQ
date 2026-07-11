@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="900" viewBox="0 0 1200 900" role="img" aria-labelledby="title desc">
+  <title id="title">AutoFTBQ software workflow</title>
+  <desc id="desc">From selecting a Minecraft modpack to generating and importing FTB Quests SNBT files.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="9" refY="6" orient="auto">
+      <path d="M1 1 L10 6 L1 11" fill="none" stroke="#111" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <filter id="paper" x="-5%" y="-5%" width="110%" height="110%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.012" numOctaves="2" seed="7" result="noise"/>
+      <feDisplacementMap in="SourceGraphic" in2="noise" scale="1.2"/>
+    </filter>
+    <style>
+      .ink { fill: #fff; stroke: #111; stroke-width: 5; stroke-linejoin: round; }
+      .line { fill: none; stroke: #111; stroke-width: 5; stroke-linecap: round; stroke-linejoin: round; marker-end: url(#arrow); }
+      .title { fill: #111; font-family: "KaiTi", "STKaiti", "Comic Sans MS", cursive; font-size: 34px; font-weight: 700; }
+      .label { fill: #111; font-family: "KaiTi", "STKaiti", "Comic Sans MS", cursive; font-size: 23px; font-weight: 700; text-anchor: middle; }
+      .small { fill: #111; font-family: "KaiTi", "STKaiti", "Comic Sans MS", cursive; font-size: 17px; text-anchor: middle; }
+      .note { fill: #111; font-family: "KaiTi", "STKaiti", "Comic Sans MS", cursive; font-size: 19px; }
+    </style>
+  </defs>
+
+  <rect x="18" y="18" width="1164" height="864" rx="28" fill="#fff" stroke="#111" stroke-width="4"/>
+  <path d="M45 78 Q300 67 585 77 T1150 73" fill="none" stroke="#111" stroke-width="3" stroke-linecap="round"/>
+  <text x="600" y="62" class="title" text-anchor="middle">AutoFTBQ · 从整合包到任务书</text>
+
+  <g filter="url(#paper)">
+    <path class="ink" d="M425 105 Q600 99 775 107 L768 185 Q600 193 432 184 Z"/>
+    <text x="600" y="139" class="label">① 选择输入内容</text>
+    <text x="600" y="166" class="small">整合包根目录 / mods / kubejs</text>
+
+    <path class="line" d="M600 190 C600 213 600 220 600 240"/>
+
+    <path class="ink" d="M375 245 Q600 237 825 246 L818 338 Q600 347 382 337 Z"/>
+    <text x="600" y="282" class="label">② 扫描与整理</text>
+    <text x="600" y="310" class="small">Mod · 物品 ID · 配方 · KubeJS 内容</text>
+
+    <path class="line" d="M600 344 C600 365 600 373 600 392"/>
+
+    <path class="ink" d="M375 397 Q600 389 825 398 L818 490 Q600 499 382 489 Z"/>
+    <text x="600" y="434" class="label">③ 选择生成方式</text>
+    <text x="600" y="462" class="small">DeepSeek / 自定义 API / Ollama / 导入 JSON</text>
+
+    <path class="line" d="M600 496 C600 518 600 525 600 545"/>
+
+    <path class="ink" d="M375 550 Q600 542 825 551 L818 643 Q600 652 382 642 Z"/>
+    <text x="600" y="587" class="label">④ 规划与生成</text>
+    <text x="600" y="615" class="small">分阶段生成 · 任务密度配额 · 主线与支线</text>
+
+    <path class="line" d="M600 649 C600 670 600 678 600 697"/>
+
+    <path class="ink" d="M375 702 Q600 694 825 703 L818 795 Q600 804 382 794 Z"/>
+    <text x="600" y="739" class="label">⑤ 校验并输出</text>
+    <text x="600" y="767" class="small">任务 ID · 依赖 · 坐标 · 物品 ID · SNBT</text>
+  </g>
+
+  <g filter="url(#paper)">
+    <path class="ink" d="M75 382 Q207 375 330 383 L324 510 Q203 519 82 509 Z"/>
+    <text x="202" y="423" class="label">AI 自动生成</text>
+    <text x="202" y="452" class="small">按配额分批调用</text>
+    <text x="202" y="477" class="small">自动合并与修复</text>
+    <path class="line" d="M330 447 C348 447 355 447 375 447"/>
+
+    <path class="ink" d="M870 382 Q997 375 1125 383 L1119 510 Q999 519 877 509 Z"/>
+    <text x="998" y="423" class="label">导入 JSON</text>
+    <text x="998" y="452" class="small">网页 AI 生成</text>
+    <text x="998" y="477" class="small">粘贴后转换 SNBT</text>
+    <path class="line" d="M825 447 C845 447 852 447 870 447"/>
+  </g>
+
+  <path class="line" d="M600 805 C600 832 600 838 600 850"/>
+  <text x="600" y="871" class="note" text-anchor="middle">复制到 config/ftbquests/quests/ · 进入游戏检查任务书</text>
+
+  <path d="M42 830 q18 -12 34 0 t34 0" fill="none" stroke="#111" stroke-width="4" stroke-linecap="round"/>
+  <path d="M1085 110 q18 -13 36 0 t36 0" fill="none" stroke="#111" stroke-width="4" stroke-linecap="round"/>
+</svg>
