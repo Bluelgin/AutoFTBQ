@@ -13,7 +13,263 @@ from collections import defaultdict
 _item_cache = {}          # filepath → (mtime, {namespace: {item_id: display_name}})
 _adv_cache = {}            # filepath → {namespace: [preferred_icon_item_ids]}
 _recipe_inputs_cache = {}  # {output_item: [input_item_list]}
+_recipe_cache = {}
+_kubejs_namespaces = set()
 _cache_lock = threading.Lock()
+
+
+def resolve_pack_paths(folder_path):
+    """Return (mods_dir, pack_root, kubejs_dir) for a mods dir or pack root."""
+    folder_path = os.path.abspath(folder_path)
+    nested_mods = os.path.join(folder_path, "mods")
+    if os.path.isdir(nested_mods):
+        mods_dir = nested_mods
+        pack_root = folder_path
+    else:
+        mods_dir = folder_path
+        pack_root = os.path.dirname(folder_path) if os.path.basename(folder_path).lower() == "mods" else folder_path
+    return mods_dir, pack_root, os.path.join(pack_root, "kubejs")
+
+
+def _strip_js_comments(text):
+    """Remove comments while preserving quoted strings used by the scanner."""
+    out = []
+    i = 0
+    quote = None
+    while i < len(text):
+        ch = text[i]
+        nxt = text[i + 1] if i + 1 < len(text) else ""
+        if quote:
+            out.append(ch)
+            if ch == "\\" and i + 1 < len(text):
+                out.append(text[i + 1])
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in ("'", '"', "`"):
+            quote = ch
+            out.append(ch)
+            i += 1
+        elif ch == "/" and nxt == "/":
+            i = text.find("\n", i)
+            if i < 0:
+                break
+        elif ch == "/" and nxt == "*":
+            end = text.find("*/", i + 2)
+            i = len(text) if end < 0 else end + 2
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out)
+
+
+def _split_js_args(text):
+    """Split a JavaScript argument list at top-level commas."""
+    parts = []
+    start = 0
+    depth = 0
+    quote = None
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if quote:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+        elif ch in ("'", '"', "`"):
+            quote = ch
+        elif ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth = max(0, depth - 1)
+        elif ch == "," and depth == 0:
+            parts.append(text[start:i].strip())
+            start = i + 1
+        i += 1
+    parts.append(text[start:].strip())
+    return parts
+
+
+def _iter_js_calls(text):
+    """Yield (method_name, arguments) for balanced JavaScript calls."""
+    call_re = re.compile(r"(?:event\.)?(?:recipes\.[A-Za-z0-9_$.]+\.)?([A-Za-z_$][\w$]*)\s*\(")
+    for match in call_re.finditer(text):
+        depth = 1
+        quote = None
+        i = match.end()
+        while i < len(text) and depth:
+            ch = text[i]
+            if quote:
+                if ch == "\\":
+                    i += 2
+                    continue
+                if ch == quote:
+                    quote = None
+            elif ch in ("'", '"', "`"):
+                quote = ch
+            elif ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+            i += 1
+        if depth == 0:
+            yield match.group(1), text[match.end():i - 1]
+
+
+def _extract_item_ids(text, default_namespace=None):
+    """Extract literal item IDs, ignoring tags and dynamic expressions."""
+    ids = []
+    for match in re.finditer(r"(['\"`])([^'\"`]+)\1", text):
+        value = match.group(2).strip()
+        value = re.sub(r"^\d+\s*[xX]\s*", "", value).strip()
+        if value.startswith("#") or "${" in value or " " in value:
+            continue
+        if re.fullmatch(r"[a-z0-9_.-]+:[a-z0-9_./-]+", value):
+            item_id = value
+        elif default_namespace and re.fullmatch(r"[a-z0-9_./-]+", value):
+            item_id = f"{default_namespace}:{value}"
+        else:
+            continue
+        if item_id not in ids:
+            ids.append(item_id)
+    return ids
+
+
+def _extract_recipe_inputs(recipe):
+    """Extract item IDs only from known ingredient fields in recipe JSON."""
+    inputs = []
+
+    def visit(value):
+        if isinstance(value, str):
+            if re.fullmatch(r"[a-z0-9_.-]+:[a-z0-9_./-]+", value) and value not in inputs:
+                inputs.append(value)
+        elif isinstance(value, list):
+            for entry in value:
+                visit(entry)
+        elif isinstance(value, dict):
+            direct = value.get("item", value.get("id", ""))
+            if isinstance(direct, str):
+                visit(direct)
+            for key, entry in value.items():
+                if key not in ("item", "id", "type", "result"):
+                    visit(entry)
+
+    if isinstance(recipe, dict):
+        for field in ("key", "ingredients", "ingredient", "input", "inputs", "base", "addition", "catalyst"):
+            if field in recipe:
+                visit(recipe[field])
+    return inputs
+
+
+def _read_kubejs_lang(kubejs_dir):
+    translations = {}
+    assets_dir = os.path.join(kubejs_dir, "assets")
+    if not os.path.isdir(assets_dir):
+        return translations
+    for root, _, files in os.walk(assets_dir):
+        if os.path.basename(root).lower() != "lang":
+            continue
+        for filename in files:
+            if filename.lower() not in ("zh_cn.json", "en_us.json", "en.json"):
+                continue
+            try:
+                with open(os.path.join(root, filename), "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    translations.update(data)
+            except (OSError, ValueError):
+                pass
+    return translations
+
+
+def scan_kubejs(kubejs_dir):
+    """Scan common KubeJS registrations and recipes without executing scripts."""
+    items = defaultdict(dict)
+    recipes = {}
+    if not os.path.isdir(kubejs_dir):
+        return {}, {}
+
+    translations = _read_kubejs_lang(kubejs_dir)
+    recipe_methods = {
+        "shaped", "shapeless", "smelting", "blasting", "smoking", "campfireCooking",
+        "stonecutting", "smithing", "crushing", "milling", "mixing", "compacting",
+        "pressing", "cutting", "splashing", "deploying", "filling", "emptying",
+        "sequencedAssembly", "mechanical_crafting", "enriching", "compressing", "sawing", "pulverizing",
+        "infusing", "injecting", "combining",
+    }
+    for script_dir in ("startup_scripts", "server_scripts", "client_scripts"):
+        base = os.path.join(kubejs_dir, script_dir)
+        if not os.path.isdir(base):
+            continue
+        for root, _, files in os.walk(base):
+            for filename in files:
+                if not filename.lower().endswith((".js", ".ts")):
+                    continue
+                try:
+                    with open(os.path.join(root, filename), "r", encoding="utf-8-sig") as f:
+                        source = _strip_js_comments(f.read())
+                except (OSError, UnicodeError):
+                    continue
+                for method, arg_text in _iter_js_calls(source):
+                    args = _split_js_args(arg_text)
+                    if method == "create" and args:
+                        for item_id in _extract_item_ids(args[0], default_namespace="kubejs"):
+                            ns, path = item_id.split(":", 1)
+                            name = (translations.get(f"item.{ns}.{path}") or
+                                    translations.get(f"block.{ns}.{path}") or _id_to_name(path))
+                            items[ns][item_id] = name
+                    elif method in recipe_methods and args:
+                        outputs = _extract_item_ids(args[0])
+                        inputs = []
+                        for arg in args[1:]:
+                            for item_id in _extract_item_ids(arg):
+                                if item_id not in inputs:
+                                    inputs.append(item_id)
+                        for output in outputs:
+                            ns, path = output.split(":", 1)
+                            items[ns].setdefault(output, _id_to_name(path))
+                            if inputs:
+                                recipes[output] = inputs
+
+    for root, _, files in os.walk(kubejs_dir):
+        normalized = root.replace("\\", "/")
+        for filename in files:
+            if not filename.lower().endswith(".json"):
+                continue
+            filepath = os.path.join(root, filename)
+            model_match = re.search(r"/assets/([^/]+)/models/(?:item|block)$", normalized)
+            if model_match:
+                ns = model_match.group(1)
+                path = os.path.splitext(filename)[0]
+                item_id = f"{ns}:{path}"
+                name = (translations.get(f"item.{ns}.{path}") or
+                        translations.get(f"block.{ns}.{path}") or _id_to_name(path))
+                items[ns][item_id] = name
+                continue
+            if not re.search(r"/data/([^/]+)/recipes(?:/|$)", normalized):
+                continue
+            try:
+                with open(filepath, "r", encoding="utf-8") as f:
+                    recipe = json.load(f)
+            except (OSError, ValueError):
+                continue
+            output = recipe.get("result", "") if isinstance(recipe, dict) else ""
+            if isinstance(output, dict):
+                output = output.get("item", output.get("id", ""))
+            if not isinstance(output, str) or ":" not in output:
+                continue
+            ns, path = output.split(":", 1)
+            items[ns].setdefault(output, _id_to_name(path))
+            inputs = [item_id for item_id in _extract_recipe_inputs(recipe) if item_id != output]
+            if inputs:
+                recipes[output] = list(dict.fromkeys(inputs))
+
+    return {ns: dict(idmap) for ns, idmap in items.items()}, recipes
 
 # ════════════════════════════════════════════════════════
 # 核心扫描函数
@@ -29,10 +285,13 @@ def scan_jar_items(filepath, max_items_per_ns=200):
 
     with _cache_lock:
         cached = _item_cache.get(filepath)
-        if cached and cached[0] == mtime:
+        recipe_cached = _recipe_cache.get(filepath)
+        if cached and cached[0] == mtime and recipe_cached and recipe_cached[0] == mtime:
+            _recipe_inputs_cache.update(recipe_cached[1])
             return cached[1]
 
     result = defaultdict(dict)
+    file_recipes = {}
     try:
         with zipfile.ZipFile(filepath, 'r') as zf:
             # 获取文件列表
@@ -169,28 +428,11 @@ def scan_jar_items(filepath, max_items_per_ns=200):
                             output = output.get("item", output.get("id", ""))
                         if not output or ":" not in output:
                             continue
-                        inputs = []
-                        if recipe.get("type") == "minecraft:crafting_shaped":
-                            for k, v in recipe.get("key", {}).items():
-                                if k == " ":
-                                    continue
-                                if isinstance(v, dict):
-                                    inp_id = v.get("item", v.get("id", ""))
-                                    if inp_id and ":" in inp_id and inp_id not in inputs:
-                                        inputs.append(inp_id)
-                        elif recipe.get("type") in ("minecraft:crafting_shapeless", "minecraft:smelting", "minecraft:blasting", "minecraft:smoking"):
-                            for ing in recipe.get("ingredients", []):
-                                if isinstance(ing, dict):
-                                    inp_id = ing.get("item", ing.get("id", ""))
-                                elif isinstance(ing, str):
-                                    inp_id = ing
-                                else:
-                                    continue
-                                if inp_id and ":" in inp_id and inp_id not in inputs:
-                                    inputs.append(inp_id)
+                        inputs = _extract_recipe_inputs(recipe)
                         if inputs:
                             with _cache_lock:
                                 _recipe_inputs_cache[output] = inputs
+                            file_recipes[output] = inputs
                     except Exception:
                         pass
 
@@ -201,6 +443,7 @@ def scan_jar_items(filepath, max_items_per_ns=200):
     final = {ns: dict(items) for ns, items in result.items() if items}
     with _cache_lock:
         _item_cache[filepath] = (mtime, final)
+        _recipe_cache[filepath] = (mtime, dict(file_recipes))
     return final
 
 
@@ -210,16 +453,20 @@ def scan_folder_items(folder_path, selected_mods=None, progress_cb=None):
     selected_mods: 可选, [{"filename":..., "mod_id":...}, ...]
     返回: {mod_id: {item_id: display_name, ...}, ...}
     """
+    mods_dir, _, kubejs_dir = resolve_pack_paths(folder_path)
+    with _cache_lock:
+        _recipe_inputs_cache.clear()
+        _kubejs_namespaces.clear()
     all_items = {}
     jar_files = []
     if selected_mods:
-        jar_files = [os.path.join(folder_path, m["filename"]) for m in selected_mods
-                     if os.path.isfile(os.path.join(folder_path, m["filename"]))]
+        jar_files = [os.path.join(mods_dir, m["filename"]) for m in selected_mods
+                     if os.path.isfile(os.path.join(mods_dir, m["filename"]))]
     else:
         # 扫描整个文件夹
-        for f in sorted(os.listdir(folder_path)):
+        for f in sorted(os.listdir(mods_dir)):
             if f.lower().endswith((".jar", ".zip")):
-                jar_files.append(os.path.join(folder_path, f))
+                jar_files.append(os.path.join(mods_dir, f))
 
     total = len(jar_files)
     for i, jarpath in enumerate(jar_files):
@@ -230,6 +477,17 @@ def scan_folder_items(folder_path, selected_mods=None, progress_cb=None):
             if ns not in all_items:
                 all_items[ns] = {}
             all_items[ns].update(idmap)
+
+    kubejs_items, kubejs_recipes = scan_kubejs(kubejs_dir)
+    for ns, idmap in kubejs_items.items():
+        all_items.setdefault(ns, {}).update(idmap)
+    with _cache_lock:
+        _kubejs_namespaces.clear()
+        _kubejs_namespaces.update(kubejs_items.keys())
+        _recipe_inputs_cache.update(kubejs_recipes)
+    if kubejs_items or kubejs_recipes:
+        item_count = sum(len(idmap) for idmap in kubejs_items.values())
+        print(f"[KUBEJS] Scanned {item_count} items and {len(kubejs_recipes)} recipes")
 
     return all_items
 
@@ -244,6 +502,7 @@ def build_item_catalog_for_prompt(all_items, selected_mods):
     active_ns = set()
     for m in selected_mods:
         active_ns.add(m.get("mod_id", ""))
+    active_ns.update(_kubejs_namespaces)
     active_ns.add("minecraft")
     # 命名空间自动解析：若 MOD_DB 的 mod_id 与 JAR 实际命名空间不匹配，自动探测
     # 例如 ae2 在 MOD_DB 中可能叫 appliedenergistics2，但 JAR 内部实际 namespace 是 ae2
@@ -1372,7 +1631,12 @@ def build_recipe_chain_hints(all_mods, max_chains_per_mod=5):
     ]
     lines = []
 
-    for m in all_mods:
+    mods_to_scan = list(all_mods)
+    known_mod_ids = {m.get("mod_id", "") for m in mods_to_scan}
+    for ns in sorted(_kubejs_namespaces - known_mod_ids):
+        mods_to_scan.append({"mod_id": ns, "mod_name": f"KubeJS ({ns})"})
+
+    for m in mods_to_scan:
         mod_id = m.get("mod_id", "")
         if not mod_id:
             continue
@@ -1398,20 +1662,23 @@ def build_recipe_chain_hints(all_mods, max_chains_per_mod=5):
                     break
         milestones = milestones[:max_chains_per_mod]
 
+        section_lines = []
         for out in milestones:
             inputs = mod_outputs[out]
             inputs_str = " + ".join(inputs[:5])
-            lines.append(f"  {out} ← {inputs_str}")
+            section_lines.append(f"  {out} ← {inputs_str}")
             # BFS 回溯一层
             for inp in inputs[:3]:
                 if inp in _recipe_inputs_cache:
                     sub = _recipe_inputs_cache[inp]
-                    lines.append(f"    └ {inp} ← {' + '.join(sub[:4])}")
+                    section_lines.append(f"    └ {inp} ← {' + '.join(sub[:4])}")
                     break  # 每个输入只回溯一层
 
-        if lines and lines[-1] != f"  {mod_id}:":  # 有数据才加标题
-            lines.insert(0, f"")
-            lines.insert(0, f"📐 {m.get('mod_name', mod_id)} ({mod_id}) 合成路线参考:")
+        if section_lines:
+            if lines:
+                lines.append("")
+            lines.append(f"📐 {m.get('mod_name', mod_id)} ({mod_id}) 合成路线参考:")
+            lines.extend(section_lines)
 
     if not lines:
         return ""
@@ -1424,6 +1691,9 @@ def clear_cache():
     with _cache_lock:
         _item_cache.clear()
         _adv_cache.clear()
+        _recipe_cache.clear()
+        _recipe_inputs_cache.clear()
+        _kubejs_namespaces.clear()
 
 
 def get_cache_stats():

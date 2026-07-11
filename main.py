@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """AutoFTBQ - MC FTB Quest Book Generator"""
 
-import os, sys, json, subprocess, threading, webbrowser
+import os, sys, json, subprocess, threading, webbrowser, time
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
@@ -10,7 +10,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
-APP_NAME = "AutoFTBQ"; VERSION = "1.3.2"; AUTHOR = "Taki"
+APP_NAME = "AutoFTBQ"; VERSION = "1.3.3"; AUTHOR = "Taki"
 CONFIG_PATH = os.path.join(SCRIPT_DIR, "config.json")
 
 AI_AVAILABLE = False; AI_IMPORT_ERROR = ""
@@ -28,28 +28,55 @@ CAT_LABEL = {"vanilla":"原版","tech":"科技","magic":"魔法","world":"维度
 
 # ── 版本检测 ──
 UPDATE_URL = "https://raw.githubusercontent.com/Bluelgin/AutoFTBQ/main/update.json"
+QUARK_FALLBACK_URL = "https://pan.quark.cn/s/25387b63a76c"
 
 def _parse_version(ver_str):
     try:
-        return tuple(int(x) for x in str(ver_str).lstrip("v").split("."))
+        parts = str(ver_str).strip().lstrip("vV").split(".")
+        return tuple(int(x) for x in parts[:3])
     except Exception:
         return (0,)
 
 def check_for_update(current_version, callback=None):
-    """异步检查 GitHub 是否有新版本"""
+    """Asynchronously check for an update and always finish with one callback."""
     def _run():
+        latest = None
+        info = {"github_url": "", "quark_url": "", "changelog": "", "error": ""}
         try:
             import requests
-            resp = requests.get(UPDATE_URL, timeout=5)
-            if resp.status_code == 200:
-                data = resp.json()
-                latest = data.get("version", "")
-                url = data.get("download_url", "")
-                if latest and _parse_version(latest) > _parse_version(current_version):
-                    if callback: callback(latest, url); return
-        except Exception:
-            pass
-        if callback: callback(None, None)
+            resp = requests.get(
+                UPDATE_URL,
+                params={"_": str(int(time.time()))},
+                timeout=(3, 8),
+                headers={"Cache-Control": "no-cache", "User-Agent": "AutoFTBQ"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            latest = str(data.get("version", "")).strip()
+            legacy_url = str(data.get("download_url", "")).strip()
+            info["github_url"] = str(data.get("github_url", "")).strip()
+            info["quark_url"] = str(data.get("quark_url", "")).strip()
+            info["changelog"] = str(data.get("changelog", "")).strip()
+            # Backward compatibility with both old Quark and old GitHub schemas.
+            if legacy_url:
+                if "pan.quark.cn" in legacy_url and not info["quark_url"]:
+                    info["quark_url"] = legacy_url
+                elif not info["github_url"]:
+                    info["github_url"] = legacy_url
+            if not info["github_url"]:
+                info["github_url"] = "https://github.com/Bluelgin/AutoFTBQ/releases/latest"
+            if not info["quark_url"]:
+                info["quark_url"] = QUARK_FALLBACK_URL
+            if not latest or _parse_version(latest) <= _parse_version(current_version):
+                latest = None
+        except Exception as exc:
+            info["error"] = str(exc)
+            latest = None
+        if callback:
+            try:
+                callback(latest, info)
+            except Exception:
+                pass
     threading.Thread(target=_run, daemon=True).start()
 
 T = {
@@ -59,7 +86,7 @@ T = {
         "subtitle_api": "API 模式 — DeepSeek / Ollama 自动生成",
         "subtitle_import": "导入模式 — 网页AI生成后粘贴JSON",
         "api_key": "API Key", "api_desc": "输入 API Key",
-        "mod_folder": "Mod 文件夹", "mod_desc": "选择包含 .jar / .zip Mod 的文件夹",
+        "mod_folder": "整合包或 Mod 文件夹", "mod_desc": "选择整合包根目录或包含 .jar / .zip Mod 的文件夹",
         "browse": "浏览", "show": "显示", "hide": "隐藏",
         "select_mods": "选择 Mod",
         "save_config": "保存配置", "generate": "生成任务书", "generating": "生成中...",
@@ -91,7 +118,7 @@ T = {
         "subtitle_api": "API Mode — DeepSeek / Ollama auto-gen",
         "subtitle_import": "Import Mode — paste JSON from web AI",
         "api_key": "API Key", "api_desc": "Enter API Key",
-        "mod_folder": "Mod Folder", "mod_desc": "Select .jar / .zip folder",
+        "mod_folder": "Modpack or Mod Folder", "mod_desc": "Select a modpack root or .jar / .zip folder",
         "browse": "Browse", "show": "Show", "hide": "Hide",
         "select_mods": "Select Mods",
         "save_config": "Save", "generate": "Generate", "generating": "Generating...",
@@ -323,6 +350,7 @@ class App:
         self.use_wiki_var = tk.BooleanVar(value=self.config.get("use_wiki", False))
         self.max_output_tokens_var = tk.StringVar(value=self.config.get("max_output_tokens", ""))
         self.generating = False
+        self._update_checking = False
         self.selected_mods = []
         self._detected_mods = []
 
@@ -978,16 +1006,25 @@ class App:
         except Exception: pass
 
 
-    def _start_update_check(self):
-        """异步检测版本更新"""
-        self.update_label.config(text="\u68c0\u67e5\u66f4\u65b0...", fg="#888888")
+    def _start_update_check(self, force=False):
+        """异步检测版本更新，保证同一时间只有一次检查。"""
+        if self._update_checking:
+            return
+        self._update_checking = True
+        self.update_label.config(text="检查更新...", fg="#888888")
         check_for_update(VERSION, self._on_update_result)
 
-    def _on_update_result(self, latest_ver, download_url):
+    def _on_update_result(self, latest_ver, update_info=None):
         def _show_dialog():
-            self.update_label.config(text="")  # 无论有没有更新都清除"检查更新..."
+            self._update_checking = False
+            update_info = update_info or {}
             if not latest_ver:
+                if update_info.get("error"):
+                    self.update_label.config(text="更新检查失败（点击重试）", fg="#c77700")
+                else:
+                    self.update_label.config(text=f"当前已是最新版本 v{VERSION}", fg="#888888")
                 return
+            self.update_label.config(text=f"发现新版本 v{latest_ver}", fg="#2196F3")
             top = tk.Toplevel(self.root)
             top.title("发现新版本")
             top.configure(bg="#ffffff")
@@ -1009,11 +1046,11 @@ class App:
             btn_frame.pack(pady=(5, 10))
 
             def _github():
-                webbrowser.open("https://github.com/Bluelgin/AutoFTBQ/releases/latest")
+                webbrowser.open(update_info.get("github_url") or "https://github.com/Bluelgin/AutoFTBQ/releases/latest")
                 top.destroy()
 
             def _quark():
-                webbrowser.open(download_url or "https://pan.quark.cn/s/25387b63a76c")
+                webbrowser.open(update_info.get("quark_url") or QUARK_FALLBACK_URL)
                 top.destroy()
 
             tk.Button(btn_frame, text="GitHub 更新", font=("Microsoft YaHei", 10),
@@ -1029,7 +1066,7 @@ class App:
         self.root.after(0, _show_dialog)
 
     def _on_update_click(self, event):
-        pass
+        self._start_update_check(force=True)
 
     def _center_window(self):
         self.root.update_idletasks()

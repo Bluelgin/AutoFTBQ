@@ -3,7 +3,7 @@
 ![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)
 ![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey.svg)
 ![License](https://img.shields.io/badge/License-GPL--3.0-green.svg)
-![Version](https://img.shields.io/badge/Version-1.3.2-orange.svg)
+![Version](https://img.shields.io/badge/Version-1.3.3-orange.svg)
 ![Downloads](https://img.shields.io/github/downloads/Bluelgin/AutoFTBQ/total?color=blue&label=Downloads)
 
 基于 AI 自动生成 Minecraft [FTB Quests](https://www.curseforge.com/minecraft/mc-mods/ftb-quests-forge) 任务书的桌面工具。
@@ -12,7 +12,7 @@
 
 ## ✨ 功能
 
-- **一键生成**：选择 Mod 文件夹 → 勾选 Mod → AI 自动生成完整任务指南（70-120 个任务）
+- **一键生成**：选择整合包或 Mod 文件夹 → 勾选 Mod → AI 分阶段生成完整任务指南
 - **双引擎支持**：DeepSeek API（在线）或 Ollama（本地模型），可自由切换
 - **启动弹窗选择模式**：API 自动生成 / 导入 JSON，选中后不可更改，UI 简洁分离
 - **两种工作模式**：
@@ -26,6 +26,17 @@
 - **自定义输出目录**：两种模式均支持指定输出路径，留空则保存到默认 `questbook_output/` 文件夹，路径会随配置持久化
 - **内置 151 个知名 Mod 信息库**：自动识别 Tinkers、Create、Botania、Mekanism 等并分类
 - **中英文双语界面**：一键切换
+
+### 可控任务密度
+
+API 自动生成模式会先由程序按密度计算每章的整数任务配额，再按 6-10 个任务一批调用 AI。每批生成后检查实际数量并过滤重复内容，最终由程序统一生成任务 ID、依赖和坐标，因此任务总数不再依赖 AI 自行计数。
+
+- **精简**：原版约 24 个任务，每个核心 Mod 约 6 个任务
+- **适中**：原版约 40 个任务，每个核心 Mod 约 10 个任务
+- **丰富**：原版约 60 个任务，每个核心 Mod 约 16 个任务
+- **拉满**：原版约 80 个任务，每个核心 Mod 约 24 个任务
+
+辅助 Mod 会按组追加任务，KubeJS 自定义内容会单独规划章节。密度越高，API 调用批次和生成耗时也会相应增加。
 
 ---
 

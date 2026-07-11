@@ -500,9 +500,10 @@ def _parse_mod(filename, filepath=None):
 def scan_mod_folder(folder_path):
     mods = []
     try:
-        for f in sorted(os.listdir(folder_path)):
+        mods_dir, _, _ = _ms.resolve_pack_paths(folder_path)
+        for f in sorted(os.listdir(mods_dir)):
             if f.lower().endswith((".jar",".zip")):
-                fp = os.path.join(folder_path, f)
+                fp = os.path.join(mods_dir, f)
                 info = _parse_mod(f, fp)
                 if info: mods.append(info)
     except Exception as e: print(f"[ERROR] {e}")
@@ -732,6 +733,7 @@ class QuestBookGenerator:
     def _build_all_ns(self):
         ns = {"minecraft"}
         for m in self.all_mods: ns.add(m['mod_id'])
+        ns.update((self._all_items or {}).keys())
         return ", ".join(sorted(ns))
 
     def _calc_max_tokens(self, is_continuation=False):
@@ -900,8 +902,287 @@ class QuestBookGenerator:
                 f"{milestone_text}"
             )
 
+    def _build_generation_plan(self):
+        """Build deterministic chapter quotas so density is controlled by code."""
+        configs = {
+            "light":  {"vanilla": 24, "core": 6,  "utility": 2, "batch": 6},
+            "medium": {"vanilla": 40, "core": 10, "utility": 3, "batch": 8},
+            "rich":   {"vanilla": 60, "core": 16, "utility": 5, "batch": 8},
+            "max":    {"vanilla": 80, "core": 24, "utility": 8, "batch": 10},
+        }
+        cfg = configs.get(getattr(self, "density", "medium"), configs["medium"])
+        vanilla_topics = [
+            ("vanilla_start", "原版·生存起步", "原木、工作台、石器、食物与庇护所"),
+            ("vanilla_iron", "原版·矿业与铁器", "矿洞探索、熔炼、铁器、红石基础"),
+            ("vanilla_magic", "原版·钻石与附魔", "钻石装备、附魔、村民与高级生存"),
+            ("vanilla_nether", "原版·下界与酿造", "下界探索、烈焰棒、药水与远古残骸"),
+            ("vanilla_end", "原版·末地与终局", "末地传送门、末影龙、鞘翅与终局建设"),
+        ]
+        density = getattr(self, "density", "medium")
+        topic_count = 4 if density in ("light", "medium") else 5
+        topics = vanilla_topics[:topic_count]
+        base, extra = divmod(cfg["vanilla"], len(topics))
+        plan = []
+        for index, (chapter_id, title, focus) in enumerate(topics):
+            plan.append({
+                "id": chapter_id,
+                "title": title,
+                "focus": focus,
+                "target": base + (1 if index < extra else 0),
+                "mods": [],
+                "namespaces": ["minecraft"],
+            })
+
+        core_mods = self.prog_mods + self.unk
+        for mod in core_mods:
+            mod_id = mod.get("mod_id", "unknown")
+            plan.append({
+                "id": f"mod_{mod_id}",
+                "title": mod.get("mod_name", mod_id),
+                "focus": f"完整覆盖 {mod.get('mod_name', mod_id)} 从入门到精通的玩法与配方链",
+                "target": cfg["core"],
+                "mods": [mod],
+                "namespaces": [mod_id],
+            })
+
+        utility_mods = list(self.util_mods)
+        for group_index in range(0, len(utility_mods), 5):
+            group = utility_mods[group_index:group_index + 5]
+            if not group:
+                continue
+            names = "、".join(m.get("mod_name", m.get("mod_id", "")) for m in group)
+            plan.append({
+                "id": f"utility_{group_index // 5 + 1}",
+                "title": "实用工具与生活" if group_index == 0 else f"实用工具与生活 {group_index // 5 + 1}",
+                "focus": f"介绍并实际使用这些辅助模组：{names}",
+                "target": max(4, cfg["utility"] * len(group)),
+                "mods": group,
+                "namespaces": [m.get("mod_id", "") for m in group if m.get("mod_id")],
+            })
+
+        known_ns = {m.get("mod_id", "") for m in self.all_mods}
+        custom_ns = sorted(ns for ns in getattr(_ms, "_kubejs_namespaces", set()) if ns not in known_ns)
+        if custom_ns:
+            plan.append({
+                "id": "kubejs_custom",
+                "title": "整合包自定义内容",
+                "focus": "覆盖 KubeJS 自定义物品、魔改配方和关键生产链",
+                "target": cfg["core"],
+                "mods": [{"mod_id": ns, "mod_name": f"KubeJS {ns}"} for ns in custom_ns],
+                "namespaces": custom_ns,
+            })
+
+        for chapter in plan:
+            chapter["batch_size"] = cfg["batch"]
+        return plan
+
+    def _chapter_catalog(self, chapter):
+        selected = chapter.get("mods", [])
+        if not selected and chapter.get("namespaces") == ["minecraft"]:
+            selected = []
+        catalog = _ms.build_item_catalog_for_prompt(self._all_items or {}, selected)
+        return catalog
+
+    def _parse_generated_quests(self, text):
+        """Parse a short staged response and return only quest dictionaries."""
+        candidate = self._extract_json(text)
+        data = None
+        for _ in range(3):
+            try:
+                data = json.loads(candidate)
+                break
+            except json.JSONDecodeError:
+                candidate = self._repair_json(candidate)
+        if isinstance(data, list):
+            quests = data
+        elif isinstance(data, dict) and isinstance(data.get("quests"), list):
+            quests = data["quests"]
+        elif isinstance(data, dict) and isinstance(data.get("chapter"), dict):
+            quests = data["chapter"].get("quests", [])
+        elif isinstance(data, dict) and data.get("chapters"):
+            quests = data["chapters"][0].get("quests", [])
+        else:
+            quests = []
+        return [q for q in quests if isinstance(q, dict)]
+
+    def _build_stage_prompt(self, chapter, count, existing_titles, catalog, wiki_text=""):
+        title_list = ", ".join(existing_titles[-30:]) if existing_titles else "无"
+        wiki_block = wiki_text[:2500] if wiki_text else ""
+        if self.lang == "zh":
+            return (
+                f"为 FTB Quests 的章节《{chapter['title']}》生成一批任务。\n"
+                f"章节重点：{chapter['focus']}\n"
+                f"EXACT_QUEST_COUNT={count}，必须恰好返回 {count} 个任务，不多不少。\n"
+                "返回结构只能是 {\"quests\":[...]}，不要章节外壳、Markdown或解释。\n"
+                "每个任务必须包含 title、subtitle、tasks、rewards；任务ID、dependencies、x、y由程序生成，不要输出。\n"
+                "tasks 类型允许 item、advancement、kill、dimension、checkmark；统一用 target 表示目标，item 必须使用目录中的真实ID，并提供count。\n"
+                "约70%为顺序推进的核心任务，约30%标题以“支线·”开头，内容不得重复。\n"
+                f"已有任务标题（禁止重复）：{title_list}\n\n"
+                f"{wiki_block}\n\n{catalog}"
+            )
+        return (
+            f"Generate one batch for the FTB Quests chapter '{chapter['title']}'.\n"
+            f"Focus: {chapter['focus']}\n"
+            f"EXACT_QUEST_COUNT={count}. Return exactly {count} quests.\n"
+            "Output only {\"quests\":[...]}. No chapter wrapper, markdown, IDs, dependencies, x or y.\n"
+            "Each quest needs title, subtitle, tasks and rewards. Use only real item IDs from the catalog.\n"
+            "Use target for task targets and include count for item tasks.\n"
+            "About 70% main progression and 30% titles prefixed with 'Branch ·'. No duplicates.\n"
+            f"Existing titles: {title_list}\n\n{wiki_block}\n\n{catalog}"
+        )
+
+    def _deduplicate_stage_quests(self, quests, existing_titles=None):
+        seen_titles = {str(t).strip().lower() for t in (existing_titles or []) if str(t).strip()}
+        seen_targets = set()
+        unique = []
+        for quest in quests:
+            title = str(quest.get("title", "")).strip()
+            if not title or title.lower() in seen_titles:
+                continue
+            primary = _get_quest_primary_item(quest)
+            key = (title.lower(), primary)
+            if key in seen_targets:
+                continue
+            seen_titles.add(title.lower())
+            seen_targets.add(key)
+            unique.append(quest)
+        return unique
+
+    def _fallback_stage_quests(self, chapter, count, existing_quests):
+        """Fill rare model shortfalls with real scanned items, never duplicated text."""
+        existing_titles = {str(q.get("title", "")).lower() for q in existing_quests}
+        existing_items = {_get_quest_primary_item(q) for q in existing_quests}
+        candidates = []
+        for namespace in chapter.get("namespaces", []):
+            candidates.extend(sorted((self._all_items or {}).get(namespace, {}).items()))
+        if "minecraft" in chapter.get("namespaces", []):
+            candidates.extend([
+                ("minecraft:crafting_table", "工作台"), ("minecraft:furnace", "熔炉"),
+                ("minecraft:iron_ingot", "铁锭"), ("minecraft:diamond", "钻石"),
+                ("minecraft:enchanting_table", "附魔台"), ("minecraft:blaze_rod", "烈焰棒"),
+                ("minecraft:ender_eye", "末影之眼"), ("minecraft:dragon_breath", "龙息"),
+            ])
+        result = []
+        for item_id, display_name in candidates:
+            if len(result) >= count:
+                break
+            if item_id in existing_items:
+                continue
+            title = f"实践·获取{display_name}"
+            if title.lower() in existing_titles:
+                continue
+            result.append({
+                "title": title,
+                "subtitle": f"获取并了解 {display_name} 的用途",
+                "tasks": [{"type": "item", "target": item_id, "count": 1}],
+                "rewards": [{"type": "xp", "count": 10}],
+            })
+            existing_items.add(item_id)
+            existing_titles.add(title.lower())
+        while len(result) < count:
+            number = len(existing_quests) + len(result) + 1
+            result.append({
+                "title": f"实践·{chapter['title']}阶段总结 {number}",
+                "subtitle": "确认已经理解并完成本阶段的关键玩法",
+                "tasks": [{"type": "checkmark"}],
+                "rewards": [{"type": "xp", "count": 10}],
+            })
+        return result
+
+    def _normalize_chapter_quests(self, chapter_id, quests):
+        """Programmatically own IDs, dependencies and layout after all batches merge."""
+        normalized = []
+        main_ids = []
+        branches = []
+        for index, original in enumerate(quests):
+            quest = dict(original)
+            quest_id = f"{chapter_id}_q_{index + 1:03d}"
+            quest["id"] = quest_id
+            title = str(quest.get("title", ""))
+            shape = str(quest.get("shape", "")).lower()
+            is_branch = ("支线" in title or "branch" in title.lower() or shape in ("diamond", "circle", "hexagon"))
+            quest.pop("dependencies", None)
+            if is_branch:
+                branches.append((quest, len(normalized)))
+            else:
+                if main_ids:
+                    quest["dependencies"] = [main_ids[-1]]
+                quest["x"] = float(len(main_ids) * 2)
+                quest["y"] = 0.0
+                quest["shape"] = "square"
+                main_ids.append(quest_id)
+            normalized.append(quest)
+        if not main_ids:
+            for index, quest in enumerate(normalized):
+                quest["x"] = float(index * 2)
+                quest["y"] = 0.0
+                quest["shape"] = "square"
+                if index:
+                    quest["dependencies"] = [normalized[index - 1]["id"]]
+            return normalized
+        for branch_index, (quest, _) in enumerate(branches):
+            anchor_index = min(branch_index, len(main_ids) - 1)
+            quest["dependencies"] = [main_ids[anchor_index]]
+            quest["x"] = float(anchor_index * 2)
+            level = branch_index // max(1, len(main_ids)) + 1
+            quest["y"] = float((-1 if branch_index % 2 == 0 else 1) * 2 * level)
+            quest["shape"] = "diamond"
+        return normalized
+
+    def _generate_questbook_staged(self, wiki_text=""):
+        plan = self._build_generation_plan()
+        total_target = sum(chapter["target"] for chapter in plan)
+        print(f"[STAGED] density={getattr(self, 'density', 'medium')}, chapters={len(plan)}, target={total_target}")
+        self._progress(f"已规划 {len(plan)} 个章节，共 {total_target} 个任务", 14)
+        completed = 0
+        chapters = []
+        system_prompt = (
+            "You generate concise valid JSON for FTB Quests. Follow EXACT_QUEST_COUNT. "
+            "Never invent item IDs and never include markdown."
+        )
+        for chapter_index, chapter in enumerate(plan):
+            catalog = self._chapter_catalog(chapter)
+            quests = []
+            while len(quests) < chapter["target"]:
+                requested = min(chapter["batch_size"], chapter["target"] - len(quests))
+                remaining = requested
+                attempts = 0
+                while remaining > 0 and attempts < 3:
+                    existing_titles = [q.get("title", "") for q in quests]
+                    prompt = self._build_stage_prompt(chapter, remaining, existing_titles, catalog, wiki_text)
+                    max_tokens = max(3072, min(12288, remaining * 1100))
+                    max_tokens = min(max_tokens, self._calc_max_tokens())
+                    content, truncated = self.client.chat(
+                        [{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt}],
+                        temperature=0.45, max_tokens=max_tokens,
+                    )
+                    parsed = [] if truncated else self._parse_generated_quests(content)
+                    parsed = self._deduplicate_stage_quests(parsed, existing_titles)
+                    accepted = parsed[:remaining]
+                    quests.extend(accepted)
+                    remaining -= len(accepted)
+                    attempts += 1
+                if remaining > 0:
+                    quests.extend(self._fallback_stage_quests(chapter, remaining, quests))
+                completed += requested
+                pct = 15 + int(60 * completed / max(1, total_target))
+                self._progress(f"分阶段生成：{chapter['title']} {len(quests)}/{chapter['target']}", pct)
+            normalized = self._normalize_chapter_quests(chapter["id"], quests[:chapter["target"]])
+            chapters.append({"id": chapter["id"], "title": chapter["title"], "quests": normalized})
+        result = {"title": "整合包任务指南", "chapters": chapters}
+        return json.dumps(result, ensure_ascii=False)
+
     def _generate_questbook(self, mod_list, all_ns, item_catalog="", wiki_text=""):
-        """三级管道：Cache Warmup → Full Gen → Auto-Continue"""
+        """Generate in deterministic chapter batches, with the legacy flow as fallback."""
+        try:
+            return self._generate_questbook_staged(wiki_text)
+        except Exception as e:
+            print(f"[STAGED] Generation failed, falling back to legacy flow: {e}")
+            self._progress("分阶段生成失败，正在回退到兼容模式...", 16)
+            return self._generate_questbook_legacy(mod_list, all_ns, item_catalog, wiki_text)
+
+    def _generate_questbook_legacy(self, mod_list, all_ns, item_catalog="", wiki_text=""):
+        """Original whole-book generation pipeline retained as a compatibility fallback."""
         quest_range, max_continue = self._get_quest_config()
         # 构建里程碑列表
         milestones = _build_milestone_list(self.all_mods)
@@ -1093,11 +1374,21 @@ class QuestBookGenerator:
         chapters_data = ai_data.get("chapters",[])
         title = ai_data.get("title","Quest Book")
         chapter_groups = []
-        qid2uid = {}
-        for ch in chapters_data:
-            for q in ch.get("quests",[]):
-                r = q.get("id",_uid())
-                if r not in qid2uid: qid2uid[r] = _uid().upper()
+        manifest_path = os.path.join(base_dir, ".autoftbq_manifest.json")
+        previous_files = []
+        try:
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                previous_files = json.load(f).get("chapter_files", [])
+        except (OSError, ValueError, AttributeError):
+            pass
+        generated_files = []
+        chapter_qid_maps = []
+        for chi, ch in enumerate(chapters_data):
+            qid_map = {}
+            for qi, q in enumerate(ch.get("quests", [])):
+                source_id = q.get("id") or f"q_{chi}_{qi}"
+                qid_map[source_id] = _uid().upper()
+            chapter_qid_maps.append(qid_map)
         for chi, ch in enumerate(chapters_data):
             chu = _uid().upper()
             cht = ch.get("title",f"Chapter {chi+1}")
@@ -1105,7 +1396,8 @@ class QuestBookGenerator:
             chi_icon = ch.get("icon") or ""
             qents = []
             for qi, q in enumerate(ch.get("quests",[])):
-                rid = q.get("id",f"q_{chi}_{qi}")
+                rid = q.get("id") or f"q_{chi}_{qi}"
+                qid2uid = chapter_qid_maps[chi]
                 qu = qid2uid.get(rid)
                 if not qu: continue
                 qt = q.get("title",f"Quest {qi+1}")
@@ -1119,13 +1411,14 @@ class QuestBookGenerator:
                     tid = _uid().upper()
                     tt_raw = str(t.get("type","checkmark")).lower()
                     tt = tt_raw.split(":", 1)[-1]  # "minecraft:item" → "item"
-                    tg = t.get("target") or t.get("item", ""); cnt = int(t.get("count",1))
+                    tg = t.get("target") or t.get("item", ""); cnt = _item_ref_count(t, tg)
                     to = {"id":tid,"type":tt}
                     if tt == "item":
                         item_id = _fx(tg)
                         if not item_id or ":" not in item_id:
                             continue
                         to["item"] = item_id
+                        if cnt != 1: to["count"] = cnt
                     elif tt == "advancement":
                         to["advancement"] = tg or "minecraft:story/root"
                         to["criterion"] = ""
@@ -1143,7 +1436,7 @@ class QuestBookGenerator:
                     ri = _uid().upper()
                     rt_raw = str(r.get("type","item")).lower()
                     rt = rt_raw.split(":", 1)[-1]
-                    rg = r.get("target") or r.get("item", ""); cnt = int(r.get("count",1))
+                    rg = r.get("target") or r.get("item", ""); cnt = _item_ref_count(r, rg)
                     ro = {"id":ri,"type":rt}
                     if rt == "item":
                         item_id = _fx(rg)
@@ -1195,7 +1488,7 @@ class QuestBookGenerator:
                             continue
                         tt_raw = str(ti.get("type", "")).lower()
                         tt_norm = tt_raw.split(":", 1)[-1]
-                        if tt_norm in ("item", "kill"):
+                        if tt_norm == "item":
                             cand = ti.get("target") or ti.get("item", "")
                             if cand and ":" in cand:
                                 qi_icon = cand
@@ -1222,7 +1515,9 @@ class QuestBookGenerator:
             if not chi_icon or ":" not in chi_icon:
                 chi_icon = "minecraft:wooden_pickaxe"
             cho["icon"] = chi_icon
-            with open(os.path.join(chapters_dir,f"{chu}.snbt"),"w",encoding="utf-8") as f:f.write(to_snbt(cho))
+            chapter_filename = f"{chu}.snbt"
+            with open(os.path.join(chapters_dir,chapter_filename),"w",encoding="utf-8") as f:f.write(to_snbt(cho))
+            generated_files.append(chapter_filename)
             group_key = ch.get("_group", chu)
             if group_key not in [g.get("id") for g in chapter_groups]:
                 cfg = CHAPTER_GROUPS.get(group_key, {})
@@ -1254,6 +1549,7 @@ class QuestBookGenerator:
         }
         with open(os.path.join(chapters_dir, f"{mark_chu}.snbt"), "w", encoding="utf-8") as f:
             f.write(to_snbt(mark_cho))
+        generated_files.append(f"{mark_chu}.snbt")
         chapter_groups.append({"id": mark_chu, "title": "【生成完毕，右下角打开编辑模式删除】"})
         with open(os.path.join(base_dir,"chapter_groups.snbt"),"w",encoding="utf-8") as f:f.write(to_snbt({"chapter_groups":chapter_groups}))
         ds = {
@@ -1268,6 +1564,17 @@ class QuestBookGenerator:
             "title":title,"version":13,
         }
         with open(os.path.join(base_dir,"data.snbt"),"w",encoding="utf-8") as f:f.write(to_snbt(ds))
+        for filename in previous_files:
+            if filename in generated_files or os.path.basename(filename) != filename:
+                continue
+            stale_path = os.path.join(chapters_dir, filename)
+            try:
+                if os.path.isfile(stale_path):
+                    os.remove(stale_path)
+            except OSError as e:
+                print(f"[WARN] Could not remove stale generated chapter '{filename}': {e}")
+        with open(manifest_path, "w", encoding="utf-8") as f:
+            json.dump({"chapter_files": generated_files}, f, ensure_ascii=False, indent=2)
         return base_dir
 
     
@@ -1416,10 +1723,27 @@ def _build_quest_links(qents):
     return links
 
 def _fx(raw):
-    if not raw or not str(raw).strip():
+    if isinstance(raw, dict):
+        raw = raw.get("id") or raw.get("item") or raw.get("target") or ""
+        if isinstance(raw, dict):
+            return _fx(raw)
+    if not isinstance(raw, (str, int)) or not str(raw).strip():
         return ""
     raw = str(raw).strip()
-    return raw if ":" in raw else f"minecraft:{raw}"
+    item_id = raw if ":" in raw else f"minecraft:{raw}"
+    if not re.fullmatch(r"[a-z0-9_.-]+:[a-z0-9_./-]+", item_id):
+        return ""
+    return item_id
+
+
+def _item_ref_count(container, raw):
+    count = container.get("count", 1) if isinstance(container, dict) else 1
+    if isinstance(raw, dict):
+        count = raw.get("count", raw.get("Count", count))
+    try:
+        return max(1, int(count))
+    except (TypeError, ValueError):
+        return 1
 def _uid(): return uuid.uuid4().hex[:16]
 
 def generate_quest_book(api_key=None, selected_mods=None, mod_folder=None,
@@ -1448,9 +1772,9 @@ def build_full_prompt(selected_mods, mod_folder=None, lang="zh"):
         lang=lang, engine="dummy"
     )
     gen.client = None  # 不需要API调用
+    scanned = gen._scan_items()
     mod_list = gen._build_mod_list()
     all_ns = gen._build_all_ns()
-    scanned = gen._scan_items()
     item_cat = _ms.build_item_catalog_for_prompt(scanned, gen.all_mods)
 
     # 动态任务数
