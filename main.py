@@ -16,7 +16,7 @@ CONFIG_PATH = os.path.join(SCRIPT_DIR, "config.json")
 AI_AVAILABLE = False; AI_IMPORT_ERROR = ""
 scan_mod_folder = None; generate_quest_book = None
 build_full_prompt = None; import_json_to_snbt = None
-normalize_provider = None; fetch_provider_models = None; PROVIDER_PRESETS = {}
+normalize_provider = None; fetch_provider_models = None; derive_models_url = None; PROVIDER_PRESETS = {}
 
 LANG = "zh"
 
@@ -127,7 +127,7 @@ def t(key, *args):
 def _check_deps():
     global AI_AVAILABLE, AI_IMPORT_ERROR, scan_mod_folder, generate_quest_book
     global build_full_prompt, import_json_to_snbt
-    global normalize_provider, fetch_provider_models, PROVIDER_PRESETS
+    global normalize_provider, fetch_provider_models, PROVIDER_PRESETS, derive_models_url
     try: import requests
     except ImportError: AI_IMPORT_ERROR = t("dep_msg"); return False
     try:
@@ -136,9 +136,10 @@ def _check_deps():
         scan_mod_folder = ai_module.scan_mod_folder
         generate_quest_book = ai_module.generate_quest_book
         build_full_prompt = ai_module.build_full_prompt
-        import_json_to_snbt = ai_module.import_json_to_snbt
+        import_json_to_snrt = ai_module.import_json_to_snbt
         normalize_provider = ai_module.normalize_provider
         fetch_provider_models = ai_module.fetch_provider_models
+        derive_models_url = ai_module.derive_models_url
         PROVIDER_PRESETS = ai_module.PROVIDER_PRESETS
         AI_AVAILABLE = True; return True
     except Exception as e: AI_IMPORT_ERROR = str(e); return False
@@ -323,6 +324,7 @@ class App:
         self.provider_var = tk.StringVar(value=self.config.get("provider", "DeepSeek"))
         self.api_url_var = tk.StringVar(value=self.config.get("api_url", ""))
         self.api_model_var = tk.StringVar(value=self.config.get("api_model", ""))
+        self.models_url_var = tk.StringVar(value=self.config.get("models_url", ""))
         self._fetched_models = []  # 缓存已获取的模型列表
         self.ollama_model_var = tk.StringVar(value=self.config.get("ollama_model", ""))
         self.output_dir_var = tk.StringVar(value=self.config.get("output_dir", ""))
@@ -392,6 +394,7 @@ class App:
         self.config["provider"] = self.provider_var.get()
         self.config["api_url"] = self.api_url_var.get().strip()
         self.config["api_model"] = self.api_model_var.get().strip()
+        self.config["models_url"] = self.models_url_var.get().strip()
         self.config["ollama_model"] = self.ollama_model_var.get()
         self.config["density"] = self.density_var.get()
         self.config["max_output_tokens"] = self.max_output_tokens_var.get().strip()
@@ -471,18 +474,16 @@ class App:
             self._on_provider_change()
 
     def _on_provider_change(self):
-        """供应商切换时：更新URL字段状态、清空模型列表、设置默认模型"""
+        """供应商切换时：更新URL字段状态、模型列表URL行、提示、清空已获取模型"""
         provider = self.provider_var.get()
         is_custom = (provider == "第三方自定义")
         preset = PROVIDER_PRESETS.get(provider, {})
 
-        # URL 字段：预设服务商只读显示预设URL，第三方自定义时可编辑
+        # ── URL 字段 ──
         if is_custom:
-            # 第三方自定义：清空URL让用户输入
-            if not self.api_url_var.get().strip() or any(
-                self.api_url_var.get().strip() == p.get("chat_url", "")
-                for p in PROVIDER_PRESETS.values()
-            ):
+            # 第三方自定义：清空URL让用户输入（如果当前是预设URL）
+            cur_url = self.api_url_var.get().strip()
+            if not cur_url or any(cur_url == p.get("chat_url", "") for p in PROVIDER_PRESETS.values()):
                 self.api_url_var.set("")
             self.api_url_entry.config(state=tk.NORMAL, bg="#ffffff", fg="#333333")
             self.api_url_label.config(text="API URL:", fg="#555555")
@@ -495,7 +496,27 @@ class App:
             self.api_url_label.config(text="API URL (预设):", fg="#888888")
             self.api_url_hint_label.config(text="", fg="#aaaaaa")
 
-        # 模型：预设服务商填入默认模型，第三方自定义清空
+        # ── 模型列表URL行：仅第三方自定义时显示 ──
+        if hasattr(self, 'models_url_row'):
+            if is_custom:
+                # 在 URL 行之后、模型行之前插入
+                self.models_url_row.pack(fill=tk.X, pady=(0, 4), after=self.api_url_entry.master)
+                self.models_url_entry.config(state=tk.NORMAL, bg="#ffffff", fg="#333333")
+            else:
+                self.models_url_row.pack_forget()
+                # 预设服务商清空自定义 models_url（用预设的）
+                self.models_url_var.set("")
+
+        # ── 服务商特定提示 ──
+        if hasattr(self, 'provider_hint_label'):
+            hint = preset.get("hint", "")
+            if hint:
+                self.provider_hint_label.config(text=f"💡 {hint}")
+                self.provider_hint_label.pack(fill=tk.X, pady=(0, 4), after=self.models_url_row if is_custom else self.api_url_entry.master)
+            else:
+                self.provider_hint_label.pack_forget()
+
+        # ── 模型默认值 ──
         if not is_custom:
             default_model = preset.get("model", "")
             if default_model and not self.api_model_var.get().strip():
@@ -506,12 +527,12 @@ class App:
             if cur_model and any(cur_model == p.get("model", "") for p in PROVIDER_PRESETS.values()):
                 self.api_model_var.set("")
 
-        # 清空已获取的模型列表
+        # ── 清空已获取的模型列表 ──
         self._fetched_models = []
         if hasattr(self, 'api_model_combo'):
             self.api_model_combo['values'] = []
         if hasattr(self, 'model_fetch_label'):
-            self.model_fetch_label.config(text="", fg="#aaaaaa")
+            self.model_fetch_label.config(text="可手动输入模型ID", fg="#aaaaaa")
 
         self._save_config()
 
@@ -520,7 +541,7 @@ class App:
             self._on_fetch_models()
 
     def _on_fetch_models(self):
-        """从服务商API获取可用模型列表"""
+        """从服务商API获取可用模型列表；失败时提示用户可手动输入，不弹窗阻断"""
         if not fetch_provider_models:
             messagebox.showwarning("提示", "依赖未加载完成，请稍后再试。")
             return
@@ -528,28 +549,32 @@ class App:
         is_custom = (provider == "第三方自定义")
         api_key = self.api_key_var.get().strip()
         if not api_key:
-            messagebox.showwarning("提示", "请先填写 API Key。")
+            # 不弹窗，仅在标签提示，保持Combobox可手动输入
+            self.model_fetch_label.config(text="请先填写 API Key，或直接手动输入模型ID", fg="#ff9800")
             return
 
         # 确定models_url
         if is_custom:
-            # 第三方自定义：从 chat_url 推导 models_url
-            chat_url = self.api_url_var.get().strip()
-            if not chat_url:
-                messagebox.showwarning("提示", "请先填写 API URL。")
-                return
-            # 推导：将 .../chat/completions → .../models
-            models_url = chat_url
-            if models_url.endswith("/chat/completions"):
-                models_url = models_url[:-len("/chat/completions")] + "/models"
-            elif models_url.endswith("/v1"):
-                models_url = models_url + "/models"
+            # 第三方自定义：优先使用用户填写的 models_url，为空时从 chat_url 推导
+            models_url = self.models_url_var.get().strip()
+            if not models_url:
+                chat_url = self.api_url_var.get().strip()
+                if not chat_url:
+                    self.model_fetch_label.config(text="请先填写 API URL，或直接手动输入模型ID", fg="#ff9800")
+                    return
+                if derive_models_url:
+                    models_url = derive_models_url(chat_url)
+                if not models_url:
+                    # 推导失败：提示用户可手动填写 models_url 或直接输入模型ID
+                    self.model_fetch_label.config(text="无法自动推导模型列表URL，请在上方填写或直接手动输入模型ID", fg="#ff9800")
+                    return
         else:
             preset = PROVIDER_PRESETS.get(provider, {})
             models_url = preset.get("models_url", "")
 
         if not models_url:
-            messagebox.showwarning("提示", "无法确定模型列表接口URL。")
+            # 预设服务商无 models_url（如火山引擎）：提示手动输入
+            self.model_fetch_label.config(text="该服务商不支持自动获取，请直接手动输入模型ID", fg="#ff9800")
             return
 
         self.model_fetch_label.config(text="正在获取模型列表...", fg="#ff9800")
@@ -717,6 +742,24 @@ class App:
                                             fg="#aaaaaa", bg="#ffffff")
         self.api_url_hint_label.pack(side=tk.LEFT, padx=(6, 0))
 
+        # Row 2b: 模型列表URL（仅第三方自定义时显示，可选）
+        self.models_url_row = tk.Frame(self.provider_frame, bg="#ffffff")
+        # 默认不 pack，_on_provider_change 会控制显示
+        tk.Label(self.models_url_row, text="模型列表URL (可选):", font=("Microsoft YaHei", 8),
+                 fg="#888888", bg="#ffffff").pack(side=tk.LEFT, padx=(0, 4))
+        self.models_url_entry = tk.Entry(self.models_url_row, textvariable=self.models_url_var,
+                                          font=("Microsoft YaHei", 8), bd=1, relief=tk.SOLID,
+                                          fg="#555555", bg="#fafafa")
+        self.models_url_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        tk.Label(self.models_url_row, text="留空自动推导", font=("Microsoft YaHei", 7),
+                 fg="#aaaaaa", bg="#ffffff").pack(side=tk.LEFT, padx=(4, 0))
+
+        # Row 2c: 服务商特定提示（如火山引擎的 Endpoint ID 提示）
+        self.provider_hint_label = tk.Label(self.provider_frame, text="", font=("Microsoft YaHei", 8),
+                                             fg="#e65100", bg="#fff8e1", wraplength=680, justify=tk.LEFT,
+                                             anchor=tk.W)
+        # 默认不显示，_on_provider_change 控制
+
         # Row 3: 模型选择（下拉 + 手动输入 + 刷新按钮）
         prov_row3 = tk.Frame(self.provider_frame, bg="#ffffff")
         prov_row3.pack(fill=tk.X, pady=(0, 2))
@@ -726,11 +769,11 @@ class App:
                                             values=[], state="normal", width=28,
                                             font=("Microsoft YaHei", 9))
         self.api_model_combo.pack(side=tk.LEFT)
-        self.fetch_models_btn = tk.Button(prov_row3, text="🔄 刷新模型列表", font=("Microsoft YaHei", 8),
+        self.fetch_models_btn = tk.Button(prov_row3, text="🔄 获取模型", font=("Microsoft YaHei", 8),
                                            command=self._on_fetch_models, bg="#e8f5e9", fg="#2e7d32",
                                            bd=1, relief=tk.SOLID, cursor="hand2", padx=8, pady=2)
         self.fetch_models_btn.pack(side=tk.LEFT, padx=(6, 0))
-        self.model_fetch_label = tk.Label(prov_row3, text="", font=("Microsoft YaHei", 8),
+        self.model_fetch_label = tk.Label(prov_row3, text="可手动输入模型ID", font=("Microsoft YaHei", 8),
                                            fg="#aaaaaa", bg="#ffffff")
         self.model_fetch_label.pack(side=tk.LEFT, padx=(8, 0))
 
@@ -954,7 +997,8 @@ class App:
             if hasattr(self, 'provider_combo'):
                 self.provider_combo.config(state="readonly" if not locked else tk.DISABLED)
             if hasattr(self, 'api_model_combo'):
-                self.api_model_combo.config(state="readonly" if not locked else tk.DISABLED)
+                # 保持可编辑（normal），让用户随时手动输入模型ID
+                self.api_model_combo.config(state="normal" if not locked else tk.DISABLED)
             if hasattr(self, 'fetch_models_btn'):
                 self.fetch_models_btn.config(state=s)
             # URL 字段：解锁时恢复到供应商对应的状态
@@ -967,6 +1011,16 @@ class App:
                         self.api_url_entry.config(state=tk.NORMAL)
                     else:
                         self.api_url_entry.config(state="readonly", readonlybackground="#f5f5f5")
+            # 模型列表URL字段（仅第三方自定义可见时才需处理）
+            if hasattr(self, 'models_url_entry'):
+                if locked:
+                    self.models_url_entry.config(state=tk.DISABLED)
+                else:
+                    provider = self.provider_var.get()
+                    if provider == "第三方自定义":
+                        self.models_url_entry.config(state=tk.NORMAL, bg="#fafafa", fg="#555555")
+                    else:
+                        self.models_url_entry.config(state=tk.DISABLED)
         except Exception: pass
         if locked:
             if hasattr(self, 'generate_btn'):

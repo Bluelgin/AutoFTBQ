@@ -597,6 +597,7 @@ PROVIDER_PRESETS = {
         "chat_url": "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
         "models_url": "https://ark.cn-beijing.volces.com/api/v3/models",
         "model": "doubao-pro-32k",
+        "hint": "火山引擎通常需要使用 Endpoint ID（如 ep-xxxxx）作为模型名，请在控制台获取后手动填入",
     },
     "第三方自定义": {},
 }
@@ -616,39 +617,77 @@ def normalize_provider(provider):
     return _PROVIDER_LEGACY_KEYS.get(provider, "DeepSeek")
 
 
-def fetch_provider_models(api_key, models_url, timeout=15):
+def derive_models_url(chat_url):
+    """
+    从 chat/completions URL 推导 models 列表 URL。
+    支持 /v1/chat/completions → /v1/models、/api/v3/chat/completions → /api/v3/models 等。
+    无法推导时返回空字符串。
+    """
+    if not chat_url:
+        return ""
+    u = chat_url.strip()
+    # 最常见模式：.../chat/completions → .../models
+    if "/chat/completions" in u:
+        return u.replace("/chat/completions", "/models", 1)
+    # .../v1 → .../v1/models
+    if u.endswith("/v1"):
+        return u + "/models"
+    if u.endswith("/"):
+        return u + "models"
+    # 未知模式
+    return ""
+
+
+def fetch_provider_models(api_key, models_url, timeout=15, max_retries=2):
     """
     从 OpenAI 兼容的 /models 接口获取可用模型列表。
-    返回 (models_list, error_message)：成功时 error_message 为 None。
+    包含重试逻辑。返回 (models_list, error_message)：成功时 error_message 为 None。
+    即使失败，调用方仍可让用户手动输入模型ID。
     """
     if not api_key or not api_key.strip():
-        return [], "请先填写 API Key"
+        return [], "请先填写 API Key 后获取，或直接手动输入模型ID"
     if not models_url:
-        return [], "未配置模型列表接口 URL"
+        return [], "未配置模型列表URL，请手动输入模型ID"
     headers = {"Authorization": f"Bearer {api_key.strip()}", "Content-Type": "application/json"}
-    try:
-        resp = requests.get(models_url, headers=headers, timeout=timeout)
-        if resp.status_code == 200:
-            data = resp.json()
-            models = []
-            for m in data.get("data", []):
-                mid = m.get("id") if isinstance(m, dict) else None
-                if mid:
-                    models.append(mid)
-            models.sort()
-            return models, None
-        elif resp.status_code == 401:
-            return [], "API Key 无效"
-        elif resp.status_code == 403:
-            return [], "无权访问模型列表（403）"
-        else:
-            return [], f"HTTP {resp.status_code}: {resp.text[:150]}"
-    except requests.exceptions.Timeout:
-        return [], "请求超时，请检查网络"
-    except requests.exceptions.ConnectionError:
-        return [], "无法连接服务器，请检查网络或 URL"
-    except Exception as e:
-        return [], f"获取模型失败: {e}"
+    last_err = ""
+    for attempt in range(max_retries + 1):
+        try:
+            resp = requests.get(models_url, headers=headers, timeout=timeout)
+            if resp.status_code == 200:
+                data = resp.json()
+                models = []
+                # 兼容两种返回格式：{"data": [{"id": ...}]} 或直接 [{"id": ...}]
+                items = data.get("data", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+                for m in items:
+                    mid = m.get("id") if isinstance(m, dict) else None
+                    if mid:
+                        models.append(mid)
+                # 去重 + 排序
+                models = sorted(set(models))
+                return models, None
+            elif resp.status_code == 401:
+                return [], "API Key 无效，请检查后重试"
+            elif resp.status_code == 403:
+                return [], "无权访问模型列表（403），请直接手动输入模型ID"
+            elif resp.status_code == 404:
+                return [], "该平台不支持/models接口，请直接手动输入模型ID"
+            elif resp.status_code in (429, 500, 502, 503):
+                last_err = f"服务器暂时不可用 (HTTP {resp.status_code})，请稍后重试或手动输入模型ID"
+                if attempt < max_retries:
+                    time.sleep(2)
+                    continue
+            else:
+                return [], f"HTTP {resp.status_code}，请手动输入模型ID"
+        except requests.exceptions.Timeout:
+            last_err = "请求超时，请检查网络后重试，或直接手动输入模型ID"
+            if attempt < max_retries:
+                time.sleep(2)
+                continue
+        except requests.exceptions.ConnectionError:
+            return [], "无法连接服务器，请检查URL或网络，或直接手动输入模型ID"
+        except Exception as e:
+            return [], f"获取模型失败: {e}，请手动输入模型ID"
+    return [], last_err
 
 class GenericOpenAIClient:
     """兼容 OpenAI 格式的通用 API 客户端"""
