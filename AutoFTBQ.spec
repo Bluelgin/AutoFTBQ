@@ -1,11 +1,24 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 import os
+import sys
+import sysconfig
 from PyInstaller.building.datastruct import Tree
 from PyInstaller.utils.hooks.tcl_tk import TclTkInfo
 
-dll_root = r'C:\Users\Administrator\AppData\Local\Python\pythoncore-3.14-64\DLLs'
-tkinter_root = r'C:\Users\Administrator\AppData\Local\Python\pythoncore-3.14-64\Lib\tkinter'
+dll_root = os.path.join(sys.base_prefix, 'DLLs')
+tkinter_root = os.path.join(sysconfig.get_path('stdlib'), 'tkinter')
+tk_binaries = [
+    os.path.join(dll_root, 'tcl86t.dll'),
+    os.path.join(dll_root, 'tk86t.dll'),
+    os.path.join(dll_root, '_tkinter.pyd'),
+]
+missing_tk_files = [path for path in tk_binaries if not os.path.isfile(path)]
+if missing_tk_files or not os.path.isdir(tkinter_root):
+    raise RuntimeError(
+        '当前 Python 环境缺少完整的 Tcl/Tk 运行库，无法安全打包：'
+        + ', '.join(missing_tk_files or [tkinter_root])
+    )
 tk_info = TclTkInfo()
 tcl_datas = [(src, os.path.dirname(dest)) for dest, src, _ in tk_info.data_files]
 tkinter_datas = [(src, os.path.dirname(dest)) for dest, src, _ in Tree(tkinter_root, prefix='tkinter')]
@@ -13,11 +26,7 @@ tkinter_datas = [(src, os.path.dirname(dest)) for dest, src, _ in Tree(tkinter_r
 a = Analysis(
     ['main.py'],
     pathex=[],
-    binaries=[
-        (os.path.join(dll_root, 'tcl86t.dll'), '.'),
-        (os.path.join(dll_root, 'tk86t.dll'), '.'),
-        (os.path.join(dll_root, '_tkinter.pyd'), '.'),
-    ],
+    binaries=[(path, '.') for path in tk_binaries],
     datas=[('playstyle_data', 'playstyle_data')] + tcl_datas + tkinter_datas,
     hiddenimports=['_tkinter'],
     hookspath=[],

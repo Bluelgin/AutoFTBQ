@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """AutoFTBQ AI模块 — FTB Quests SNBT生成 v4"""
 
-import os, re, json, uuid, time
+import os, re, json, uuid
 import requests
 
 try:
@@ -20,9 +20,43 @@ try:
 except ImportError:
     import modrinth_client as _mrc
 
-DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
-DEEPSEEK_MODEL = "deepseek-v4-flash"
-MAX_RETRIES = 3; RETRY_DELAY = 3; API_TIMEOUT = 300
+try:
+    from .ai_clients import (
+        API_TIMEOUT,
+        DEEPSEEK_API_URL,
+        DEEPSEEK_MODEL,
+        DeepSeekClient,
+        GenericOpenAIClient,
+        create_chat_client,
+    )
+    from .ai_providers import (
+        CUSTOM_PROVIDER,
+        PROVIDER_PRESETS,
+        derive_models_url,
+        fetch_provider_models,
+        normalize_provider,
+    )
+    from .quest_schema import QuestValidationError, extract_quest_batch, normalize_quest_book
+    from .quest_writer import write_quest_book
+except ImportError:
+    from ai_clients import (
+        API_TIMEOUT,
+        DEEPSEEK_API_URL,
+        DEEPSEEK_MODEL,
+        DeepSeekClient,
+        GenericOpenAIClient,
+        create_chat_client,
+    )
+    from ai_providers import (
+        CUSTOM_PROVIDER,
+        PROVIDER_PRESETS,
+        derive_models_url,
+        fetch_provider_models,
+        normalize_provider,
+    )
+    from quest_schema import QuestValidationError, extract_quest_batch, normalize_quest_book
+    from quest_writer import write_quest_book
+
 OUTPUT_DIR_NAME = "questbook_output"
 
 # ════════════════════════════════════════════════════════
@@ -392,6 +426,8 @@ def _is_armor(item_id):
     return False
 
 def _get_quest_primary_item(quest):
+    if not isinstance(quest, dict):
+        return ""
     for task in quest.get("tasks", []):
         if not isinstance(task, dict):
             continue
@@ -524,92 +560,20 @@ def classify_mods(mods):
     return progression, utility, addon, unknown
 
 # ════════════════════════════════════════════════════════
-class DeepSeekClient:
-    def __init__(self, api_key):
-        self.headers = {"Authorization":f"Bearer {api_key.strip()}","Content-Type":"application/json"}
-    def chat(self, messages, temperature=0.7, max_tokens=8192):
-        """
-        发送聊天请求到 DeepSeek
-        返回 (content, is_truncated): content 为生成的文本, is_truncated 表示输出被截断(finish_reason=="length")
-        """
-        payload = {"model":DEEPSEEK_MODEL,"messages":messages,"temperature":temperature,"max_tokens":max_tokens,"stream":False}
-        for attempt in range(MAX_RETRIES):
-            try:
-                resp = requests.post(DEEPSEEK_API_URL,json=payload,headers=self.headers,timeout=API_TIMEOUT)
-                if resp.status_code==200:
-                    data = resp.json()
-                    choice = data["choices"][0]
-                    content = choice["message"]["content"]
-                    finish_reason = choice.get("finish_reason", "stop")
-                    return content, (finish_reason == "length")
-                elif resp.status_code==401: raise Exception("API Key无效，请检查后重试")
-                elif resp.status_code==429: time.sleep(RETRY_DELAY*(attempt+1)*2)
-                elif resp.status_code>=500: time.sleep(RETRY_DELAY*(attempt+1))
-                else: raise Exception(f"API错误 {resp.status_code}: {resp.text[:200]}")
-            except requests.exceptions.Timeout:
-                if attempt==MAX_RETRIES-1: raise Exception("请求超时，请检查网络后重试")
-            except requests.exceptions.ConnectionError: raise Exception("网络错误，无法连接到DeepSeek API")
-            except Exception as e:
-                if "API Key" in str(e) or "网络" in str(e): raise
-                if attempt==MAX_RETRIES-1: raise
-                time.sleep(RETRY_DELAY)
-        raise Exception("已达最大重试次数")
-
-# ════════════════════════════════════════════════════════
-# 通用 OpenAI 兼容客户端
-PROVIDER_PRESETS = {
-    "deepseek": {"url": "https://api.deepseek.com/chat/completions", "model": "deepseek-v4-flash"},
-}
-
-class GenericOpenAIClient:
-    """兼容 OpenAI 格式的通用 API 客户端"""
-    def __init__(self, api_key, api_url, model):
-        self.api_url = api_url
-        self.model = model
-        self.headers = {"Authorization": f"Bearer {api_key.strip()}", "Content-Type": "application/json"}
-    def chat(self, messages, temperature=0.7, max_tokens=8192):
-        payload = {"model":self.model,"messages":messages,"temperature":temperature,"max_tokens":max_tokens,"stream":False}
-        for attempt in range(MAX_RETRIES):
-            try:
-                resp = requests.post(self.api_url, json=payload, headers=self.headers, timeout=API_TIMEOUT)
-                if resp.status_code==200:
-                    data = resp.json()
-                    choice = data["choices"][0]
-                    content = choice["message"]["content"]
-                    finish_reason = choice.get("finish_reason", "stop")
-                    return content, (finish_reason == "length")
-                elif resp.status_code==401: raise Exception("API Key无效，请检查后重试")
-                elif resp.status_code==402: raise Exception("账户额度不足，请检查API余额")
-                else:
-                    if attempt < MAX_RETRIES - 1: time.sleep(RETRY_DELAY); continue
-                    raise Exception(f"API请求失败 (HTTP {resp.status_code}): {resp.text[:200]}")
-            except requests.exceptions.Timeout:
-                if attempt < MAX_RETRIES - 1: time.sleep(RETRY_DELAY); continue
-                raise Exception("API请求超时")
-            except requests.exceptions.ConnectionError:
-                if attempt < MAX_RETRIES - 1: time.sleep(RETRY_DELAY); continue
-                raise Exception("无法连接API服务器")
-        raise Exception("API请求失败（重试次数耗尽）")
-
-# ════════════════════════════════════════════════════════
 class QuestBookGenerator:
     def __init__(self, api_key=None, selected_mods=None, mod_folder=None,
                  progress_callback=None, lang="zh", engine="deepseek",
                  ollama_model=None, provider=None, api_url=None, api_model=None, max_output_tokens=None):
         # 根据引擎创建客户端
         self.engine = engine
-        if engine == "ollama":
-            model = ollama_model or "qwen2.5-coder:7b"
-            self.client = _oa.OllamaClient(model=model)
-        elif engine == "dummy":
-            self.client = None  # 不调用API，仅用于SNBT转换
-        elif engine == "generic":
-            presets = PROVIDER_PRESETS.get(provider or "deepseek", {})
-            final_url = api_url or presets.get("url", "https://api.deepseek.com/chat/completions")
-            final_model = api_model or presets.get("model", "deepseek-chat")
-            self.client = GenericOpenAIClient(api_key or "", final_url, final_model)
-        else:
-            self.client = DeepSeekClient(api_key or "")
+        self.client = create_chat_client(
+            engine=engine,
+            api_key=api_key,
+            ollama_model=ollama_model,
+            provider=provider,
+            api_url=api_url,
+            api_model=api_model,
+        )
         self.all_mods = selected_mods or []
         self.mod_folder = mod_folder
         self.cb = progress_callback
@@ -993,17 +957,7 @@ class QuestBookGenerator:
                 break
             except json.JSONDecodeError:
                 candidate = self._repair_json(candidate)
-        if isinstance(data, list):
-            quests = data
-        elif isinstance(data, dict) and isinstance(data.get("quests"), list):
-            quests = data["quests"]
-        elif isinstance(data, dict) and isinstance(data.get("chapter"), dict):
-            quests = data["chapter"].get("quests", [])
-        elif isinstance(data, dict) and data.get("chapters"):
-            quests = data["chapters"][0].get("quests", [])
-        else:
-            quests = []
-        return [q for q in quests if isinstance(q, dict)]
+        return extract_quest_batch(data)
 
     def _build_stage_prompt(self, chapter, count, existing_titles, catalog, wiki_text=""):
         title_list = ", ".join(existing_titles[-30:]) if existing_titles else "无"
@@ -1173,13 +1127,8 @@ class QuestBookGenerator:
         return json.dumps(result, ensure_ascii=False)
 
     def _generate_questbook(self, mod_list, all_ns, item_catalog="", wiki_text=""):
-        """Generate in deterministic chapter batches, with the legacy flow as fallback."""
-        try:
-            return self._generate_questbook_staged(wiki_text)
-        except Exception as e:
-            print(f"[STAGED] Generation failed, falling back to legacy flow: {e}")
-            self._progress("分阶段生成失败，正在回退到兼容模式...", 16)
-            return self._generate_questbook_legacy(mod_list, all_ns, item_catalog, wiki_text)
+        """Generate only in deterministic batches so density remains enforceable."""
+        return self._generate_questbook_staged(wiki_text)
 
     def _generate_questbook_legacy(self, mod_list, all_ns, item_catalog="", wiki_text=""):
         """Original whole-book generation pipeline retained as a compatibility fallback."""
@@ -1290,16 +1239,24 @@ class QuestBookGenerator:
         for attempt in range(3):
             try:
                 ai_data = json.loads(json_text)
+                ai_data, schema_issues = normalize_quest_book(ai_data)
+                for issue in schema_issues:
+                    print(f"[SCHEMA] {issue}")
                 ai_data, _ = self._deduplicate_quests(ai_data)
                 break
             except json.JSONDecodeError:
                 json_text = self._repair_json(json_text)
+            except QuestValidationError:
+                raise
         # AI二次审查：当常规修复无法解决时，用AI修复JSON结构错误
         if ai_data is None and self.client is not None:
             try:
                 print("[AI_REPAIR] Attempting AI repair for broken JSON...")
                 ai_data = self._ai_repair_json(json_text)
                 if ai_data is not None:
+                    ai_data, schema_issues = normalize_quest_book(ai_data)
+                    for issue in schema_issues:
+                        print(f"[SCHEMA] {issue}")
                     ai_data, _ = self._deduplicate_quests(ai_data)
                     print("[AI_REPAIR] AI repair succeeded!")
             except Exception as e:
@@ -1370,214 +1327,21 @@ class QuestBookGenerator:
             ch["_group"] = group_key
 
     def _write_snbt_files(self, base_dir, ai_data):
-        chapters_dir = os.path.join(base_dir, "chapters")
-        chapters_data = ai_data.get("chapters",[])
-        title = ai_data.get("title","Quest Book")
-        chapter_groups = []
-        manifest_path = os.path.join(base_dir, ".autoftbq_manifest.json")
-        previous_files = []
-        try:
-            with open(manifest_path, "r", encoding="utf-8") as f:
-                previous_files = json.load(f).get("chapter_files", [])
-        except (OSError, ValueError, AttributeError):
-            pass
-        generated_files = []
-        chapter_qid_maps = []
-        for chi, ch in enumerate(chapters_data):
-            qid_map = {}
-            for qi, q in enumerate(ch.get("quests", [])):
-                source_id = q.get("id") or f"q_{chi}_{qi}"
-                qid_map[source_id] = _uid().upper()
-            chapter_qid_maps.append(qid_map)
-        for chi, ch in enumerate(chapters_data):
-            chu = _uid().upper()
-            cht = ch.get("title",f"Chapter {chi+1}")
-            # 章节图标：优先 AI 写的，否则用第一个 quest 的图标，再否则用原版 pickaxe
-            chi_icon = ch.get("icon") or ""
-            qents = []
-            for qi, q in enumerate(ch.get("quests",[])):
-                rid = q.get("id") or f"q_{chi}_{qi}"
-                qid2uid = chapter_qid_maps[chi]
-                qu = qid2uid.get(rid)
-                if not qu: continue
-                qt = q.get("title",f"Quest {qi+1}")
-                qs = q.get("subtitle","")
-                qde = q.get("description",[])
-                if isinstance(qde,str): qde = [qde]
-                tasks = []
-                for t in q.get("tasks",[]):
-                    if not isinstance(t, dict):
-                        continue
-                    tid = _uid().upper()
-                    tt_raw = str(t.get("type","checkmark")).lower()
-                    tt = tt_raw.split(":", 1)[-1]  # "minecraft:item" → "item"
-                    tg = t.get("target") or t.get("item", ""); cnt = _item_ref_count(t, tg)
-                    to = {"id":tid,"type":tt}
-                    if tt == "item":
-                        item_id = _fx(tg)
-                        if not item_id or ":" not in item_id:
-                            continue
-                        to["item"] = item_id
-                        if cnt != 1: to["count"] = cnt
-                    elif tt == "advancement":
-                        to["advancement"] = tg or "minecraft:story/root"
-                        to["criterion"] = ""
-                    elif tt == "kill":
-                        to["entity"] = tg or "minecraft:zombie"
-                        to["value"] = _L(cnt) if cnt>10 else cnt
-                    elif tt == "dimension": to["dimension"] = tg or "minecraft:overworld"
-                    elif tt == "checkmark": to["value"] = 1
-                    tasks.append(to)
-                if not tasks: tasks.append({"id":_uid().upper(),"type":"checkmark","value":1})
-                rewards = []
-                for r in q.get("rewards",[]):
-                    if not isinstance(r, dict):
-                        continue
-                    ri = _uid().upper()
-                    rt_raw = str(r.get("type","item")).lower()
-                    rt = rt_raw.split(":", 1)[-1]
-                    rg = r.get("target") or r.get("item", ""); cnt = _item_ref_count(r, rg)
-                    ro = {"id":ri,"type":rt}
-                    if rt == "item":
-                        item_id = _fx(rg)
-                        if not item_id or ":" not in item_id:
-                            continue
-                        ro["item"] = item_id
-                        if cnt != 1: ro["count"] = cnt
-                    elif rt == "command": ro["command"] = rg or "/say Hello"
-                    elif rt == "xp": ro["xp_amount"] = cnt
-                    elif rt == "xp_levels": ro["xp_levels"] = cnt
-                    rewards.append(ro)
-                deps = q.get("dependencies",[])
-                if isinstance(deps,str): deps = [deps]
-                du = []
-                for d in deps:
-                    if d in qid2uid:
-                        du.append(qid2uid[d])
-                    else:
-                        print(f"[WARN] Dependency '{d}' not found in quest '{qt}' — removing")
-                sh = q.get("shape","square")
-                # FTBQ supports: square, diamond, hexagon, gear, circle, rsquare
-                if sh not in ("square","diamond","hexagon","gear","circle","rsquare"):
-                    sh = "square"
-                # 优先使用AI指定的坐标，只在缺失时自动计算
-                ai_x = q.get("x")
-                ai_y = q.get("y")
-                if ai_x is not None and ai_y is not None and isinstance(ai_x, (int, float)) and isinstance(ai_y, (int, float)):
-                    xv = _D(round(float(ai_x), 1))
-                    yv = _D(round(float(ai_y), 1))
-                else:
-                    # 为无坐标的任务做智能布局：有依赖的跟随第一个依赖的位置偏移，无依赖的串行排列
-                    if du:
-                        ref_x, ref_y = qi * 2.0, 0.0
-                        for ref_q in qents:
-                            if ref_q["id"] in du:
-                                ref_x, ref_y = float(str(ref_q["x"])[:-1]), float(str(ref_q["y"])[:-1])
-                                break
-                        xv = _D(round(ref_x + 2.0, 1))
-                        yv = _D(round(ref_y, 1))
-                    else:
-                        xv = _D(round(qi * 2.0, 1))
-                        yv = _D(0.0)
-                # 任务图标：优先 AI 写的（如果碰巧写了），否则用第一个 item task 的 target
-                qi_icon = q.get("icon") or ""
-                if not qi_icon or ":" not in qi_icon:
-                    tasks_for_icon = q.get("tasks", [])
-                    for ti in tasks_for_icon:
-                        if not isinstance(ti, dict):
-                            continue
-                        tt_raw = str(ti.get("type", "")).lower()
-                        tt_norm = tt_raw.split(":", 1)[-1]
-                        if tt_norm == "item":
-                            cand = ti.get("target") or ti.get("item", "")
-                            if cand and ":" in cand:
-                                qi_icon = cand
-                                break
-                if not qi_icon or ":" not in qi_icon:
-                    qi_icon = "minecraft:book"
-                qo = {"id":qu,"title":qt,"icon":qi_icon,"x":xv,"y":yv,"shape":sh,"dependencies":du,"tasks":tasks,"rewards":rewards}
-                if qs: qo["subtitle"] = qs
-                if qde: qo["description"] = qde
-                qents.append(qo)
-            # quest_links left empty — FTBQ auto-draws dependency lines
-            cho = {
-                "default_hide_dependency_lines":False,"default_quest_shape":"","filename":chu,
-                "group": ch.get("_group", chu), "icon":chi_icon,"id":chu,"order_index":chi,
-                "quest_links":[],"quests":qents,"title":cht,
-            }
-            # 章节图标回退
-            if not chi_icon or ":" not in chi_icon:
-                for _q in qents:
-                    qi = _q.get("icon", "")
-                    if qi and ":" in qi:
-                        chi_icon = qi
-                        break
-            if not chi_icon or ":" not in chi_icon:
-                chi_icon = "minecraft:wooden_pickaxe"
-            cho["icon"] = chi_icon
-            chapter_filename = f"{chu}.snbt"
-            with open(os.path.join(chapters_dir,chapter_filename),"w",encoding="utf-8") as f:f.write(to_snbt(cho))
-            generated_files.append(chapter_filename)
-            group_key = ch.get("_group", chu)
-            if group_key not in [g.get("id") for g in chapter_groups]:
-                cfg = CHAPTER_GROUPS.get(group_key, {})
-                chapter_groups.append({"id": group_key, "title": cfg.get("title", group_key)})
-        # 追加标记章节，提示玩家此为自动生成
-        mark_chu = "ZZZZZZZZZZZZZZZZ"  # 固定ID，方便定位
-        mark_cho = {
-            "default_hide_dependency_lines": False,
-            "default_quest_shape": "",
-            "filename": mark_chu,
-            "group": mark_chu,
-            "icon": "minecraft:writable_book",
-            "id": mark_chu,
-            "order_index": len(chapter_groups),
-            "quest_links": [],
-            "quests": [{
-                "id": "ZZZZZZZZZZZZZZZ0",
-                "title": "本软件完全免费，此章节是用于检测生成结果，可随意删除",
-                "subtitle": "",
-                "icon": "minecraft:writable_book",
-                "x": _D(0.0),
-                "y": _D(0.0),
-                "shape": "square",
-                "tasks": [{"id": "ZZZZZZZZZZZZZZZ1", "type": "checkmark"}],
-                "dependencies": [],
-                "rewards": [],
-            }],
-            "title": "本软件完全免费，此章节是用于检测生成结果，可随意删除",
-        }
-        with open(os.path.join(chapters_dir, f"{mark_chu}.snbt"), "w", encoding="utf-8") as f:
-            f.write(to_snbt(mark_cho))
-        generated_files.append(f"{mark_chu}.snbt")
-        chapter_groups.append({"id": mark_chu, "title": "【生成完毕，右下角打开编辑模式删除】"})
-        with open(os.path.join(base_dir,"chapter_groups.snbt"),"w",encoding="utf-8") as f:f.write(to_snbt({"chapter_groups":chapter_groups}))
-        ds = {
-            "default_autoclaim_rewards":"disabled","default_consume_items":False,
-            "default_quest_disable_jei":False,"default_quest_shape":"circle",
-            "default_reward_team":False,"detection_delay":20,"disable_gui":False,
-            "drop_book_on_death":False,"drop_loot_crates":False,
-            "emergency_items_cooldown":300,"grid_scale":_D(0.5),
-            "icon":"minecraft:book","lock_message":"",
-            "loot_crate_no_drop":{"boss":0,"monster":600,"passive":4000},
-            "pause_game":False,"progression_mode":"linear","show_lock_icons":True,
-            "title":title,"version":13,
-        }
-        with open(os.path.join(base_dir,"data.snbt"),"w",encoding="utf-8") as f:f.write(to_snbt(ds))
-        for filename in previous_files:
-            if filename in generated_files or os.path.basename(filename) != filename:
-                continue
-            stale_path = os.path.join(chapters_dir, filename)
-            try:
-                if os.path.isfile(stale_path):
-                    os.remove(stale_path)
-            except OSError as e:
-                print(f"[WARN] Could not remove stale generated chapter '{filename}': {e}")
-        with open(manifest_path, "w", encoding="utf-8") as f:
-            json.dump({"chapter_files": generated_files}, f, ensure_ascii=False, indent=2)
-        return base_dir
-
-    
+        """Validate and delegate SNBT output while preserving the legacy method."""
+        ai_data, schema_issues = normalize_quest_book(ai_data)
+        for issue in schema_issues:
+            print(f"[SCHEMA] {issue}")
+        return write_quest_book(
+            base_dir,
+            ai_data,
+            uid=_uid,
+            normalize_item=_fx,
+            item_count=_item_ref_count,
+            to_snbt=to_snbt,
+            double_value=_D,
+            long_value=_L,
+            group_config=CHAPTER_GROUPS,
+        )
 
     def _deduplicate_quests(self, ai_data):
         """Remove duplicate quests within each chapter (by title and by ID)"""

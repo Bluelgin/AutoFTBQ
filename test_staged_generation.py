@@ -43,6 +43,20 @@ class EmptyClient:
         return '{"quests": []}', False
 
 
+class InvalidShapeClient:
+    def __init__(self):
+        self.calls = 0
+
+    def chat(self, messages, temperature=0.7, max_tokens=8192):
+        self.calls += 1
+        return '{"chapters": ["not-a-chapter"]}', False
+
+
+class FailingClient:
+    def chat(self, messages, temperature=0.7, max_tokens=8192):
+        raise RuntimeError("offline")
+
+
 def _small_plan(target=5, batch_size=2):
     return [{
         "id": "test_chapter",
@@ -88,6 +102,24 @@ class StagedGenerationTests(unittest.TestCase):
         self.assertEqual(client.calls, 3)
         self.assertEqual(len(quests), 3)
         self.assertEqual(quests[0]["tasks"][0]["target"], "minecraft:stone")
+
+    def test_malformed_ollama_shape_falls_back_without_attribute_error(self):
+        client = InvalidShapeClient()
+        self.generator.client = client
+        self.generator._build_generation_plan = lambda: _small_plan(2, 2)
+
+        result = json.loads(self.generator._generate_questbook_staged())
+
+        self.assertEqual(len(result["chapters"][0]["quests"]), 2)
+        self.assertEqual(client.calls, 3)
+
+    def test_staged_failure_is_not_hidden_by_legacy_generation(self):
+        self.generator.client = FailingClient()
+        self.generator._build_generation_plan = lambda: _small_plan(1, 1)
+        self.generator._generate_questbook_legacy = lambda *args: self.fail("legacy flow should not run")
+
+        with self.assertRaisesRegex(RuntimeError, "offline"):
+            self.generator._generate_questbook("mods", "minecraft")
 
     def test_density_plan_is_deterministic_and_increasing(self):
         mod = {"mod_id": "example", "mod_name": "Example", "category": "tech"}

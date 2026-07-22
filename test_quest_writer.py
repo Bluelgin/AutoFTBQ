@@ -4,6 +4,7 @@ import sys
 import tempfile
 import types
 import unittest
+from unittest.mock import patch
 
 try:
     import requests  # noqa: F401
@@ -44,6 +45,16 @@ class QuestWriterTests(unittest.TestCase):
                 with open(os.path.join(chapter_dir, filename), "r", encoding="utf-8") as f:
                     texts.append(f.read())
         return texts
+
+    def _output_snapshot(self):
+        snapshot = {}
+        for root, _, files in os.walk(self.output):
+            for filename in files:
+                path = os.path.join(root, filename)
+                relative = os.path.relpath(path, self.output)
+                with open(path, "rb") as handle:
+                    snapshot[relative] = handle.read()
+        return snapshot
 
     def test_preserves_item_task_count(self):
         data = {"chapters": [{"title": "A", "quests": [_quest("q1", count=64)]}]}
@@ -166,6 +177,40 @@ class QuestWriterTests(unittest.TestCase):
         text = self._chapter_texts()[0]
         self.assertNotIn("Collect ten relics", text)
         self.assertIn('type: "checkmark"', text)
+
+    def test_serialization_failure_keeps_previous_output_unchanged(self):
+        first = {"chapters": [{"title": "Stable", "quests": [_quest("q1")]}]}
+        self.generator._write_snbt_files(self.output, first)
+        before = self._output_snapshot()
+
+        second = {"chapters": [{"title": "Broken", "quests": [_quest("q2")]}]}
+        with patch("ai_module.to_snbt", side_effect=RuntimeError("serialize failed")):
+            with self.assertRaisesRegex(RuntimeError, "serialize failed"):
+                self.generator._write_snbt_files(self.output, second)
+
+        self.assertEqual(self._output_snapshot(), before)
+
+    def test_partial_commit_failure_rolls_back_every_generated_file(self):
+        first = {"chapters": [{"title": "Stable", "quests": [_quest("q1")]}]}
+        self.generator._write_snbt_files(self.output, first)
+        before = self._output_snapshot()
+        real_replace = os.replace
+        staged_replaces = 0
+
+        def fail_second_staged_replace(source, target):
+            nonlocal staged_replaces
+            if ".autoftbq-stage-" in source:
+                staged_replaces += 1
+                if staged_replaces == 2:
+                    raise PermissionError("simulated lock")
+            return real_replace(source, target)
+
+        second = {"chapters": [{"title": "Replacement", "quests": [_quest("q2")]}]}
+        with patch("quest_writer.os.replace", side_effect=fail_second_staged_replace):
+            with self.assertRaisesRegex(PermissionError, "simulated lock"):
+                self.generator._write_snbt_files(self.output, second)
+
+        self.assertEqual(self._output_snapshot(), before)
 
 
 if __name__ == "__main__":

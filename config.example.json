@@ -1,4 +1,13 @@
 {
-    "api_key": "sk-your-deepseek-api-key-here",
-    "mod_folder": "E:/your-minecraft-instance/mods"
+    "engine": "deepseek",
+    "provider": "DeepSeek",
+    "api_key": "sk-your-api-key-here",
+    "api_url": "",
+    "api_model": "deepseek-chat",
+    "models_url": "",
+    "ollama_model": "qwen2.5-coder:7b",
+    "mod_folder": "E:/your-minecraft-instance/mods",
+    "output_dir": "",
+    "density": "medium",
+    "max_output_tokens": ""
 }

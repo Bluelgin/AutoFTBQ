@@ -26,11 +26,17 @@ def check_ollama_available():
         resp = requests.get(f"{OLLAMA_BASE}/api/tags", timeout=DETECT_TIMEOUT)
         if resp.status_code == 200:
             data = resp.json()
-            models = [m["name"] for m in data.get("models", [])]
+            if not isinstance(data, dict) or not isinstance(data.get("models"), list):
+                return False, []
+            models = [
+                model["name"]
+                for model in data["models"]
+                if isinstance(model, dict) and isinstance(model.get("name"), str)
+            ]
             return True, models
         return False, []
     except (requests.ConnectionError, requests.Timeout,
-            requests.RequestException, json.JSONDecodeError):
+            requests.RequestException, json.JSONDecodeError, TypeError, ValueError):
         return False, []
 
 
@@ -94,7 +100,11 @@ class OllamaClient:
             )
             if resp.status_code == 200:
                 data = resp.json()
+                if not isinstance(data, dict):
+                    raise RuntimeError("Ollama 返回格式异常：响应不是 JSON 对象，请升级 Ollama 后重试")
                 content = data.get("response", "")
+                if not isinstance(content, str):
+                    raise RuntimeError("Ollama 返回格式异常：response 字段不是文本")
                 done = data.get("done", True)
                 return content, not done  # done=False 表示输出被截断
             elif resp.status_code == 404:
