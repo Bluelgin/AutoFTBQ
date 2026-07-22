@@ -36,7 +36,16 @@ try:
         fetch_provider_models,
         normalize_provider,
     )
-    from .quest_schema import QuestValidationError, extract_quest_batch, normalize_quest_book
+    from .quest_schema import normalize_quest_book
+    from .quest_parser import (
+        deduplicate_quest_book,
+        extract_json,
+        parse_json_document,
+        parse_quest_batch,
+        reorganize_json,
+        repair_json,
+        repair_json_with_ai,
+    )
     from .quest_prompts import (
         build_stage_prompt,
         build_system_prompt,
@@ -68,7 +77,16 @@ except ImportError:
         fetch_provider_models,
         normalize_provider,
     )
-    from quest_schema import QuestValidationError, extract_quest_batch, normalize_quest_book
+    from quest_schema import normalize_quest_book
+    from quest_parser import (
+        deduplicate_quest_book,
+        extract_json,
+        parse_json_document,
+        parse_quest_batch,
+        reorganize_json,
+        repair_json,
+        repair_json_with_ai,
+    )
     from quest_prompts import (
         build_stage_prompt,
         build_system_prompt,
@@ -799,16 +817,7 @@ class QuestBookGenerator:
         return catalog
 
     def _parse_generated_quests(self, text):
-        """Parse a short staged response and return only quest dictionaries."""
-        candidate = self._extract_json(text)
-        data = None
-        for _ in range(3):
-            try:
-                data = json.loads(candidate)
-                break
-            except json.JSONDecodeError:
-                candidate = self._repair_json(candidate)
-        return extract_quest_batch(data)
+        return parse_quest_batch(text)
 
     def _build_stage_prompt(self, chapter, count, existing_titles, catalog, wiki_text=""):
         return build_stage_prompt(
@@ -985,20 +994,12 @@ class QuestBookGenerator:
         rt_dir = os.path.join(base_dir, "reward_tables")
         os.makedirs(rt_dir, exist_ok=True)
         with open(os.path.join(base_dir,"ai_raw_output.txt"),"w",encoding="utf-8") as f:f.write(quest_json_text)
-        json_text = self._merge_json_parts(quest_json_text)
-        ai_data = None
-        for attempt in range(3):
-            try:
-                ai_data = json.loads(json_text)
-                ai_data, schema_issues = normalize_quest_book(ai_data)
-                for issue in schema_issues:
-                    print(f"[SCHEMA] {issue}")
-                ai_data, _ = self._deduplicate_quests(ai_data)
-                break
-            except json.JSONDecodeError:
-                json_text = self._repair_json(json_text)
-            except QuestValidationError:
-                raise
+        ai_data, json_text = parse_json_document(quest_json_text)
+        if ai_data is not None:
+            ai_data, schema_issues = normalize_quest_book(ai_data)
+            for issue in schema_issues:
+                print(f"[SCHEMA] {issue}")
+            ai_data, _ = self._deduplicate_quests(ai_data)
         # AI二次审查：当常规修复无法解决时，用AI修复JSON结构错误
         if ai_data is None and self.client is not None:
             try:
@@ -1047,13 +1048,7 @@ class QuestBookGenerator:
         return self._write_snbt_files(base_dir, ai_data)
 
     def _reorganize_chapters(self, quest_json_text):
-        """提取并整理 JSON"""
-        json_text = self._extract_json(quest_json_text)
-        try:
-            ai_data = json.loads(json_text)
-        except json.JSONDecodeError:
-            return quest_json_text
-        return json.dumps(ai_data, ensure_ascii=False)
+        return reorganize_json(quest_json_text)
 
     def _annotate_chapter_groups(self, ai_data):
         """给每个章节分配 _group 字段（用于FTB Quests分组折叠）"""
@@ -1095,121 +1090,21 @@ class QuestBookGenerator:
         )
 
     def _deduplicate_quests(self, ai_data):
-        """Remove duplicate quests within each chapter (by title and by ID)"""
-        removed = 0
-        for ch in ai_data.get("chapters", []):
-            quests = ch.get("quests", [])
-            seen_titles = set()
-            seen_ids = set()
-            unique = []
-            for q in quests:
-                qid = q.get("id", "")
-                title = q.get("title", "")
-                is_dup = False
-                if title and title in seen_titles:
-                    print(f"[DEDUP] Removing duplicate quest (same title): {title}")
-                    is_dup = True
-                elif qid and qid in seen_ids:
-                    print(f"[DEDUP] Removing duplicate quest (same id): {qid} ({title})")
-                    is_dup = True
-                if is_dup:
-                    removed += 1
-                else:
-                    if title:
-                        seen_titles.add(title)
-                    if qid:
-                        seen_ids.add(qid)
-                    unique.append(q)
-            ch["quests"] = unique
-        print(f"[DEDUP] Removed {removed} duplicate quests")
-        return ai_data, removed
+        return deduplicate_quest_book(ai_data)
 
 
 
     def _ai_repair_json(self, broken_text):
-        """使用AI修复正则无法处理的JSON结构错误（如字符串内嵌括号）"""
-        if not self.client:
-            return None
-        # 截断过长的文本，避免超出上下文窗口
-        MAX_INPUT = 80000
-        input_text = broken_text[:MAX_INPUT] if len(broken_text) > MAX_INPUT else broken_text
-        if self.lang == "zh":
-            sys_prompt = "你是一个JSON修复专家。只修复语法错误，不改变任何数据内容。"
-            user_prompt = (
-                "修复下面FTB任务书JSON的语法错误。规则：\n"
-                "1. 只修复JSON语法错误（字符串未闭合、括号不匹配、逗号缺失/多余、换行符）\n"
-                "2. 不要删除、添加或修改任何章节、任务、物品ID、标题等数据\n"
-                "3. 保持所有文本原样\n"
-                "4. 只输出修复后的JSON，不要任何解释\n\n"
-                f"JSON：\n{input_text}"
-            )
-        else:
-            sys_prompt = "You are a JSON repair expert. Fix syntax errors only, do not change any data."
-            user_prompt = (
-                "Fix the JSON syntax errors below. Rules:\n"
-                "1. Only fix JSON syntax errors (unclosed strings, mismatched brackets, missing/extra commas)\n"
-                "2. Do not delete, add or modify any chapters, quests, item IDs, titles, etc.\n"
-                "3. Keep all text content as-is\n"
-                "4. Output ONLY the fixed JSON, no explanation\n\n"
-                f"JSON:\n{input_text}"
-            )
-        messages = [
-            {"role": "system", "content": sys_prompt},
-            {"role": "user", "content": user_prompt}
-        ]
-        max_out = min(int(len(input_text) * 1.3), 131072)
-        try:
-            result_text, _ = self.client.chat(messages, temperature=0.1, max_tokens=max_out)
-            fixed = self._extract_json(result_text)
-            return json.loads(fixed)
-        except Exception as e:
-            print(f"[AI_REPAIR] Failed: {e}")
-            return None
+        return repair_json_with_ai(self.client, broken_text, self.lang)
 
     def _merge_json_parts(self, raw_text):
-        """提取JSON文本（不重构章节，保留AI原始结构，由 _save_snbt_files 的 repair 循环兜底）"""
-        return self._extract_json(raw_text)
+        return extract_json(raw_text)
 
     def _repair_json(self, text):
-        """修复AI返回JSON的常见语法错误（缺失逗号、尾随逗号、缺括号）"""
-        text = re.sub(r',\s*}', '}', text)
-        text = re.sub(r',\s*]', ']', text)
-        text = re.sub(r'}\s*{', '},{', text)
-        text = re.sub(r']\s*{', '],{', text)
-        text = re.sub(r'}\s*\[', '},[', text)
-        text = re.sub(r']\s*\[', '],[', text)
-        d = sum(1 for c in text if c == '{') - sum(1 for c in text if c == '}')
-        a = sum(1 for c in text if c == '[') - sum(1 for c in text if c == ']')
-        if d > 0: text += '}' * d
-        if a > 0: text += ']' * a
-        # 4. fix invalid JSON escape sequences (e.g. \x, \a, truncated \u)
-        text = re.sub(r'\\(?=u(?:[0-9a-fA-F]{0,3}(?:[^0-9a-fA-F"\\\\]|$)))', r'\\\\', text)
-        text = re.sub(r'\\([^"\\\\/bfnrtu])', r'\\\\\1', text)
-        return text
-
+        return repair_json(text)
 
     def _extract_json(self, text):
-        if not text: return "{}"
-        m = re.search(r'```(?:json)?\s*\n(.*?)```', text, re.DOTALL)
-        if m: return m.group(1).strip()
-        s, e = text.find("{"), text.rfind("}")
-        if s < 0 or e <= s: return text
-        raw = text[s:e+1]
-        # 智能修复截断的JSON：去掉截断中残破的最后一段
-        # 找最后一个合法的 }, 或 ], 或 " 结尾
-        last_good = -1
-        for p in [raw.rfind('\n    }\n'), raw.rfind('\n  }\n'), raw.rfind('\n  ]\n'),
-                   raw.rfind('\n    ]\n'), raw.rfind('}\n'), raw.rfind(']\n')]:
-            if p > last_good:
-                last_good = p
-        if last_good > len(raw) * 0.5:  # 过半完整即尝试修复
-            raw = raw[:last_good+1]  # 保留那个 }
-            # 补上缺失的闭合
-            d = sum(1 for c in raw if c == '{') - sum(1 for c in raw if c == '}')
-            a = sum(1 for c in raw if c == '[') - sum(1 for c in raw if c == ']')
-            raw += ']'*a + '}'*d
-            return raw
-        return raw
+        return extract_json(text)
 
 def _build_quest_links(qents):
     """
