@@ -46,6 +46,11 @@ try:
         repair_json,
         repair_json_with_ai,
     )
+    from .quest_generation import (
+        StagedGenerationHooks,
+        StagedGenerationService,
+        calculate_max_tokens,
+    )
     from .quest_prompts import (
         build_stage_prompt,
         build_system_prompt,
@@ -86,6 +91,11 @@ except ImportError:
         reorganize_json,
         repair_json,
         repair_json_with_ai,
+    )
+    from quest_generation import (
+        StagedGenerationHooks,
+        StagedGenerationService,
+        calculate_max_tokens,
     )
     from quest_prompts import (
         build_stage_prompt,
@@ -721,35 +731,13 @@ class QuestBookGenerator:
         return ", ".join(sorted(ns))
 
     def _calc_max_tokens(self, is_continuation=False):
-        """根据Mod数量动态计算max_tokens，6档精细化"""
-        # 如果用户自定义了max_output_tokens，直接使用
-        if getattr(self, "max_output_tokens", None) is not None:
-            return int(self.max_output_tokens)
-        mod_count = len(self.prog_mods) + len(self.unk)
-        if mod_count <= 5:
-            base = 16384
-        elif mod_count <= 10:
-            base = 32768
-        elif mod_count <= 20:
-            base = 49152
-        elif mod_count <= 30:
-            base = 65536
-        elif mod_count <= 50:
-            base = 98304
-        else:
-            base = 131072
-        if self.engine == "ollama":
-            base = min(base, 49152 if is_continuation else 40960)
-        # 根据 density 调整 max_tokens
-        density_mult = {
-            "light": 0.7,
-            "medium": 1.0,
-            "rich": 1.5,
-            "max": 2.0,
-        }.get(getattr(self, "density", "medium"), 1.0)
-        if density_mult != 1.0:
-            base = int(base * density_mult)
-        return base
+        return calculate_max_tokens(
+            len(self.prog_mods) + len(self.unk),
+            self.engine,
+            getattr(self, "density", "medium"),
+            self.max_output_tokens,
+            is_continuation,
+        )
 
     def _get_quest_config(self):
         """根据 Mod 数量动态返回 (quest_range_str, max_continue)"""
@@ -844,47 +832,23 @@ class QuestBookGenerator:
         return normalize_chapter_quests(chapter_id, quests)
 
     def _generate_questbook_staged(self, wiki_text=""):
-        plan = self._build_generation_plan()
-        total_target = sum(chapter["target"] for chapter in plan)
-        print(f"[STAGED] density={getattr(self, 'density', 'medium')}, chapters={len(plan)}, target={total_target}")
-        self._progress(f"已规划 {len(plan)} 个章节，共 {total_target} 个任务", 14)
-        completed = 0
-        chapters = []
-        system_prompt = (
-            "You generate concise valid JSON for FTB Quests. Follow EXACT_QUEST_COUNT. "
-            "Never invent item IDs and never include markdown."
+        hooks = StagedGenerationHooks(
+            build_plan=self._build_generation_plan,
+            build_catalog=self._chapter_catalog,
+            build_prompt=self._build_stage_prompt,
+            parse_batch=self._parse_generated_quests,
+            deduplicate_batch=self._deduplicate_stage_quests,
+            build_fallback=self._fallback_stage_quests,
+            normalize_chapter=self._normalize_chapter_quests,
+            max_tokens=self._calc_max_tokens,
         )
-        for chapter_index, chapter in enumerate(plan):
-            catalog = self._chapter_catalog(chapter)
-            quests = []
-            while len(quests) < chapter["target"]:
-                requested = min(chapter["batch_size"], chapter["target"] - len(quests))
-                remaining = requested
-                attempts = 0
-                while remaining > 0 and attempts < 3:
-                    existing_titles = [q.get("title", "") for q in quests]
-                    prompt = self._build_stage_prompt(chapter, remaining, existing_titles, catalog, wiki_text)
-                    max_tokens = max(3072, min(12288, remaining * 1100))
-                    max_tokens = min(max_tokens, self._calc_max_tokens())
-                    content, truncated = self.client.chat(
-                        [{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt}],
-                        temperature=0.45, max_tokens=max_tokens,
-                    )
-                    parsed = [] if truncated else self._parse_generated_quests(content)
-                    parsed = self._deduplicate_stage_quests(parsed, existing_titles)
-                    accepted = parsed[:remaining]
-                    quests.extend(accepted)
-                    remaining -= len(accepted)
-                    attempts += 1
-                if remaining > 0:
-                    quests.extend(self._fallback_stage_quests(chapter, remaining, quests))
-                completed += requested
-                pct = 15 + int(60 * completed / max(1, total_target))
-                self._progress(f"分阶段生成：{chapter['title']} {len(quests)}/{chapter['target']}", pct)
-            normalized = self._normalize_chapter_quests(chapter["id"], quests[:chapter["target"]])
-            chapters.append({"id": chapter["id"], "title": chapter["title"], "quests": normalized})
-        result = {"title": "整合包任务指南", "chapters": chapters}
-        return json.dumps(result, ensure_ascii=False)
+        service = StagedGenerationService(
+            self.client,
+            getattr(self, "density", "medium"),
+            self._progress,
+            hooks,
+        )
+        return service.generate(wiki_text)
 
     def _generate_questbook(self, mod_list, all_ns, item_catalog="", wiki_text=""):
         """Generate only in deterministic batches so density remains enforceable."""

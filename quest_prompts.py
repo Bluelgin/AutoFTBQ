@@ -3,6 +3,12 @@
 from __future__ import annotations
 
 
+STAGED_SYSTEM_PROMPT = (
+    "You generate concise valid JSON for FTB Quests. Follow EXACT_QUEST_COUNT. "
+    "Never invent item IDs and never include markdown."
+)
+
+
 def milestone_to_prompt(milestones, lang="zh"):
     """将里程碑字典转为 Prompt 中的'必须覆盖'段落"""
     if not milestones:
