@@ -37,6 +37,13 @@ try:
         normalize_provider,
     )
     from .quest_schema import QuestValidationError, extract_quest_batch, normalize_quest_book
+    from .quest_planner import (
+        build_fallback_quests,
+        build_generation_plan,
+        deduplicate_stage_quests,
+        get_quest_primary_item,
+        normalize_chapter_quests,
+    )
     from .quest_writer import write_quest_book
 except ImportError:
     from ai_clients import (
@@ -55,6 +62,13 @@ except ImportError:
         normalize_provider,
     )
     from quest_schema import QuestValidationError, extract_quest_batch, normalize_quest_book
+    from quest_planner import (
+        build_fallback_quests,
+        build_generation_plan,
+        deduplicate_stage_quests,
+        get_quest_primary_item,
+        normalize_chapter_quests,
+    )
     from quest_writer import write_quest_book
 
 OUTPUT_DIR_NAME = "questbook_output"
@@ -426,17 +440,7 @@ def _is_armor(item_id):
     return False
 
 def _get_quest_primary_item(quest):
-    if not isinstance(quest, dict):
-        return ""
-    for task in quest.get("tasks", []):
-        if not isinstance(task, dict):
-            continue
-        ttype = str(task.get("type", "")).lower()
-        if "item" in ttype:
-            target = task.get("target") or task.get("item", "")
-            if target and ":" in target:
-                return target
-    return ""
+    return get_quest_primary_item(quest)
 
 def _recipe_chain_depth(item_id, visited=None, max_depth=12):
     if visited is None:
@@ -867,78 +871,15 @@ class QuestBookGenerator:
             )
 
     def _build_generation_plan(self):
-        """Build deterministic chapter quotas so density is controlled by code."""
-        configs = {
-            "light":  {"vanilla": 24, "core": 6,  "utility": 2, "batch": 6},
-            "medium": {"vanilla": 40, "core": 10, "utility": 3, "batch": 8},
-            "rich":   {"vanilla": 60, "core": 16, "utility": 5, "batch": 8},
-            "max":    {"vanilla": 80, "core": 24, "utility": 8, "batch": 10},
-        }
-        cfg = configs.get(getattr(self, "density", "medium"), configs["medium"])
-        vanilla_topics = [
-            ("vanilla_start", "原版·生存起步", "原木、工作台、石器、食物与庇护所"),
-            ("vanilla_iron", "原版·矿业与铁器", "矿洞探索、熔炼、铁器、红石基础"),
-            ("vanilla_magic", "原版·钻石与附魔", "钻石装备、附魔、村民与高级生存"),
-            ("vanilla_nether", "原版·下界与酿造", "下界探索、烈焰棒、药水与远古残骸"),
-            ("vanilla_end", "原版·末地与终局", "末地传送门、末影龙、鞘翅与终局建设"),
-        ]
-        density = getattr(self, "density", "medium")
-        topic_count = 4 if density in ("light", "medium") else 5
-        topics = vanilla_topics[:topic_count]
-        base, extra = divmod(cfg["vanilla"], len(topics))
-        plan = []
-        for index, (chapter_id, title, focus) in enumerate(topics):
-            plan.append({
-                "id": chapter_id,
-                "title": title,
-                "focus": focus,
-                "target": base + (1 if index < extra else 0),
-                "mods": [],
-                "namespaces": ["minecraft"],
-            })
-
-        core_mods = self.prog_mods + self.unk
-        for mod in core_mods:
-            mod_id = mod.get("mod_id", "unknown")
-            plan.append({
-                "id": f"mod_{mod_id}",
-                "title": mod.get("mod_name", mod_id),
-                "focus": f"完整覆盖 {mod.get('mod_name', mod_id)} 从入门到精通的玩法与配方链",
-                "target": cfg["core"],
-                "mods": [mod],
-                "namespaces": [mod_id],
-            })
-
-        utility_mods = list(self.util_mods)
-        for group_index in range(0, len(utility_mods), 5):
-            group = utility_mods[group_index:group_index + 5]
-            if not group:
-                continue
-            names = "、".join(m.get("mod_name", m.get("mod_id", "")) for m in group)
-            plan.append({
-                "id": f"utility_{group_index // 5 + 1}",
-                "title": "实用工具与生活" if group_index == 0 else f"实用工具与生活 {group_index // 5 + 1}",
-                "focus": f"介绍并实际使用这些辅助模组：{names}",
-                "target": max(4, cfg["utility"] * len(group)),
-                "mods": group,
-                "namespaces": [m.get("mod_id", "") for m in group if m.get("mod_id")],
-            })
-
-        known_ns = {m.get("mod_id", "") for m in self.all_mods}
-        custom_ns = sorted(ns for ns in getattr(_ms, "_kubejs_namespaces", set()) if ns not in known_ns)
-        if custom_ns:
-            plan.append({
-                "id": "kubejs_custom",
-                "title": "整合包自定义内容",
-                "focus": "覆盖 KubeJS 自定义物品、魔改配方和关键生产链",
-                "target": cfg["core"],
-                "mods": [{"mod_id": ns, "mod_name": f"KubeJS {ns}"} for ns in custom_ns],
-                "namespaces": custom_ns,
-            })
-
-        for chapter in plan:
-            chapter["batch_size"] = cfg["batch"]
-        return plan
+        """Compatibility wrapper around the standalone deterministic planner."""
+        return build_generation_plan(
+            getattr(self, "density", "medium"),
+            self.prog_mods,
+            self.util_mods,
+            self.unk,
+            self.all_mods,
+            set(getattr(_ms, "_kubejs_namespaces", set())),
+        )
 
     def _chapter_catalog(self, chapter):
         selected = chapter.get("mods", [])
@@ -986,102 +927,18 @@ class QuestBookGenerator:
         )
 
     def _deduplicate_stage_quests(self, quests, existing_titles=None):
-        seen_titles = {str(t).strip().lower() for t in (existing_titles or []) if str(t).strip()}
-        seen_targets = set()
-        unique = []
-        for quest in quests:
-            title = str(quest.get("title", "")).strip()
-            if not title or title.lower() in seen_titles:
-                continue
-            primary = _get_quest_primary_item(quest)
-            key = (title.lower(), primary)
-            if key in seen_targets:
-                continue
-            seen_titles.add(title.lower())
-            seen_targets.add(key)
-            unique.append(quest)
-        return unique
+        return deduplicate_stage_quests(quests, existing_titles)
 
     def _fallback_stage_quests(self, chapter, count, existing_quests):
-        """Fill rare model shortfalls with real scanned items, never duplicated text."""
-        existing_titles = {str(q.get("title", "")).lower() for q in existing_quests}
-        existing_items = {_get_quest_primary_item(q) for q in existing_quests}
-        candidates = []
-        for namespace in chapter.get("namespaces", []):
-            candidates.extend(sorted((self._all_items or {}).get(namespace, {}).items()))
-        if "minecraft" in chapter.get("namespaces", []):
-            candidates.extend([
-                ("minecraft:crafting_table", "工作台"), ("minecraft:furnace", "熔炉"),
-                ("minecraft:iron_ingot", "铁锭"), ("minecraft:diamond", "钻石"),
-                ("minecraft:enchanting_table", "附魔台"), ("minecraft:blaze_rod", "烈焰棒"),
-                ("minecraft:ender_eye", "末影之眼"), ("minecraft:dragon_breath", "龙息"),
-            ])
-        result = []
-        for item_id, display_name in candidates:
-            if len(result) >= count:
-                break
-            if item_id in existing_items:
-                continue
-            title = f"实践·获取{display_name}"
-            if title.lower() in existing_titles:
-                continue
-            result.append({
-                "title": title,
-                "subtitle": f"获取并了解 {display_name} 的用途",
-                "tasks": [{"type": "item", "target": item_id, "count": 1}],
-                "rewards": [{"type": "xp", "count": 10}],
-            })
-            existing_items.add(item_id)
-            existing_titles.add(title.lower())
-        while len(result) < count:
-            number = len(existing_quests) + len(result) + 1
-            result.append({
-                "title": f"实践·{chapter['title']}阶段总结 {number}",
-                "subtitle": "确认已经理解并完成本阶段的关键玩法",
-                "tasks": [{"type": "checkmark"}],
-                "rewards": [{"type": "xp", "count": 10}],
-            })
-        return result
+        return build_fallback_quests(
+            chapter,
+            count,
+            existing_quests,
+            self._all_items or {},
+        )
 
     def _normalize_chapter_quests(self, chapter_id, quests):
-        """Programmatically own IDs, dependencies and layout after all batches merge."""
-        normalized = []
-        main_ids = []
-        branches = []
-        for index, original in enumerate(quests):
-            quest = dict(original)
-            quest_id = f"{chapter_id}_q_{index + 1:03d}"
-            quest["id"] = quest_id
-            title = str(quest.get("title", ""))
-            shape = str(quest.get("shape", "")).lower()
-            is_branch = ("支线" in title or "branch" in title.lower() or shape in ("diamond", "circle", "hexagon"))
-            quest.pop("dependencies", None)
-            if is_branch:
-                branches.append((quest, len(normalized)))
-            else:
-                if main_ids:
-                    quest["dependencies"] = [main_ids[-1]]
-                quest["x"] = float(len(main_ids) * 2)
-                quest["y"] = 0.0
-                quest["shape"] = "square"
-                main_ids.append(quest_id)
-            normalized.append(quest)
-        if not main_ids:
-            for index, quest in enumerate(normalized):
-                quest["x"] = float(index * 2)
-                quest["y"] = 0.0
-                quest["shape"] = "square"
-                if index:
-                    quest["dependencies"] = [normalized[index - 1]["id"]]
-            return normalized
-        for branch_index, (quest, _) in enumerate(branches):
-            anchor_index = min(branch_index, len(main_ids) - 1)
-            quest["dependencies"] = [main_ids[anchor_index]]
-            quest["x"] = float(anchor_index * 2)
-            level = branch_index // max(1, len(main_ids)) + 1
-            quest["y"] = float((-1 if branch_index % 2 == 0 else 1) * 2 * level)
-            quest["shape"] = "diamond"
-        return normalized
+        return normalize_chapter_quests(chapter_id, quests)
 
     def _generate_questbook_staged(self, wiki_text=""):
         plan = self._build_generation_plan()
