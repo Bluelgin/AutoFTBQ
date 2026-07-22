@@ -7,7 +7,7 @@
 ![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)
 ![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey.svg)
 ![License](https://img.shields.io/badge/License-GPL--3.0-green.svg)
-![Version](https://img.shields.io/badge/Version-1.3.3-orange.svg)
+![Version](https://img.shields.io/badge/Version-1.3.4-orange.svg)
 [![Downloads](https://img.shields.io/github/downloads/Bluelgin/AutoFTBQ/total?color=blue&label=Downloads)](https://github.com/Bluelgin/AutoFTBQ/releases)
 
 ## 先说它能做什么
@@ -23,6 +23,13 @@
 - 支持中文和英文界面，以及自定义输出目录。
 
 > 目前稳定版支持 DeepSeek、Ollama，以及手动配置的 OpenAI 兼容 API。第三方服务没有统一的模型列表和错误格式，所以自定义 API 需要用户自己填写并确认参数。
+
+## v1.3.4 更新
+
+- 分阶段定额生成更稳定，任务密度不再只依赖 AI 自己计数。
+- 完善 KubeJS 扫描、自定义 API 和 Ollama 返回兼容。
+- 修复部分 SNBT 写入、物品引用以及 EXE 启动问题。
+- 拆分任务规划、提示词、解析和生成流程，方便后续继续维护。
 
 ## 软件工作流程
 
