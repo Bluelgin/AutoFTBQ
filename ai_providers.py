@@ -14,7 +14,13 @@ PROVIDER_PRESETS = {
     "DeepSeek": {
         "chat_url": "https://api.deepseek.com/chat/completions",
         "models_url": "https://api.deepseek.com/models",
-        "model": "deepseek-chat",
+        "model": "deepseek-v4-flash",
+        "model_migrations": {
+            "deepseek-chat": "deepseek-v4-flash",
+        },
+        "request_overrides": {
+            "thinking": {"type": "disabled"},
+        },
     },
     "OpenAI": {
         "chat_url": "https://api.openai.com/v1/chat/completions",
@@ -29,22 +35,38 @@ PROVIDER_PRESETS = {
     "Moonshot": {
         "chat_url": "https://api.moonshot.cn/v1/chat/completions",
         "models_url": "https://api.moonshot.cn/v1/models",
-        "model": "moonshot-v1-8k",
+        "model": "kimi-k2.6",
+        "model_migrations": {
+            "moonshot-v1-8k": "kimi-k2.6",
+        },
+        "omit_temperature": True,
+        "request_overrides": {
+            "thinking": {"type": "disabled"},
+        },
     },
     "Zhipu": {
         "chat_url": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
         "models_url": "https://open.bigmodel.cn/api/paas/v4/models",
-        "model": "glm-4",
+        "model": "glm-5.2",
+        "model_migrations": {
+            "glm-4": "glm-5.2",
+        },
     },
     "Qwen": {
         "chat_url": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
         "models_url": "https://dashscope.aliyuncs.com/compatible-mode/v1/models",
-        "model": "qwen-plus",
+        "model": "qwen3.7-plus",
+        "model_migrations": {
+            "qwen-plus": "qwen3.7-plus",
+        },
     },
     "SiliconFlow": {
         "chat_url": "https://api.siliconflow.cn/v1/chat/completions",
         "models_url": "https://api.siliconflow.cn/v1/models",
-        "model": "deepseek-ai/DeepSeek-V3",
+        "model": "deepseek-ai/DeepSeek-V4-Flash",
+        "model_migrations": {
+            "deepseek-ai/DeepSeek-V3": "deepseek-ai/DeepSeek-V4-Flash",
+        },
     },
     "Volcengine": {
         "chat_url": "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
@@ -68,6 +90,28 @@ def normalize_provider(provider):
     if provider in PROVIDER_PRESETS:
         return provider
     return _PROVIDER_LEGACY_KEYS.get(str(provider).lower(), "DeepSeek")
+
+
+def resolve_provider_model(provider, model=None):
+    """Return a current preset model without replacing unknown user choices."""
+    normalized = normalize_provider(provider)
+    preset = PROVIDER_PRESETS.get(normalized, {})
+    current = str(model or "").strip()
+    if not current:
+        return preset.get("model", "")
+    return preset.get("model_migrations", {}).get(current, current)
+
+
+def select_provider_model(provider, current_model, available_models):
+    """Prefer a valid current choice, then the preset, then the first API result."""
+    models = [str(model).strip() for model in available_models if str(model).strip()]
+    resolved = resolve_provider_model(provider, current_model)
+    if resolved in models:
+        return resolved
+    preferred = PROVIDER_PRESETS.get(normalize_provider(provider), {}).get("model", "")
+    if preferred in models:
+        return preferred
+    return models[0] if models else resolved
 
 
 def derive_models_url(chat_url):

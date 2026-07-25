@@ -3,7 +3,7 @@
     "provider": "DeepSeek",
     "api_key": "sk-your-api-key-here",
     "api_url": "",
-    "api_model": "deepseek-chat",
+    "api_model": "deepseek-v4-flash",
     "models_url": "",
     "ollama_model": "qwen2.5-coder:7b",
     "mod_folder": "E:/your-minecraft-instance/mods",

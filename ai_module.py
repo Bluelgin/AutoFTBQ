@@ -35,6 +35,8 @@ try:
         derive_models_url,
         fetch_provider_models,
         normalize_provider,
+        resolve_provider_model,
+        select_provider_model,
     )
     from .quest_schema import normalize_quest_book
     from .quest_parser import (
@@ -81,6 +83,8 @@ except ImportError:
         derive_models_url,
         fetch_provider_models,
         normalize_provider,
+        resolve_provider_model,
+        select_provider_model,
     )
     from quest_schema import normalize_quest_book
     from quest_parser import (

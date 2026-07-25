@@ -9,14 +9,14 @@ import requests
 
 try:
     from . import ollama_adapter
-    from .ai_providers import PROVIDER_PRESETS, normalize_provider
+    from .ai_providers import PROVIDER_PRESETS, normalize_provider, resolve_provider_model
 except ImportError:
     import ollama_adapter
-    from ai_providers import PROVIDER_PRESETS, normalize_provider
+    from ai_providers import PROVIDER_PRESETS, normalize_provider, resolve_provider_model
 
 
-DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
-DEEPSEEK_MODEL = "deepseek-chat"
+DEEPSEEK_API_URL = PROVIDER_PRESETS["DeepSeek"]["chat_url"]
+DEEPSEEK_MODEL = PROVIDER_PRESETS["DeepSeek"]["model"]
 API_TIMEOUT = 300
 MAX_RETRIES = 3
 RETRY_DELAY = 3
@@ -52,7 +52,15 @@ def _response_content(payload):
 class GenericOpenAIClient:
     """Minimal OpenAI Chat Completions compatible client."""
 
-    def __init__(self, api_key, api_url, model, timeout=API_TIMEOUT):
+    def __init__(
+        self,
+        api_key,
+        api_url,
+        model,
+        timeout=API_TIMEOUT,
+        omit_temperature=False,
+        request_overrides=None,
+    ):
         if not api_url:
             raise ValueError("未配置 API URL")
         if not model:
@@ -60,6 +68,8 @@ class GenericOpenAIClient:
         self.api_url = api_url
         self.model = model
         self.timeout = timeout
+        self.omit_temperature = omit_temperature
+        self.request_overrides = dict(request_overrides or {})
         self.headers = {
             "Authorization": f"Bearer {str(api_key).strip()}",
             "Content-Type": "application/json",
@@ -70,10 +80,12 @@ class GenericOpenAIClient:
         payload = {
             "model": self.model,
             "messages": messages,
-            "temperature": temperature,
             "max_tokens": max_tokens,
             "stream": False,
         }
+        if not self.omit_temperature:
+            payload["temperature"] = temperature
+        payload.update(self.request_overrides)
         for attempt in range(MAX_RETRIES):
             try:
                 response = requests.post(
@@ -112,7 +124,14 @@ class GenericOpenAIClient:
 
 class DeepSeekClient(GenericOpenAIClient):
     def __init__(self, api_key):
-        super().__init__(api_key, DEEPSEEK_API_URL, DEEPSEEK_MODEL)
+        preset = PROVIDER_PRESETS["DeepSeek"]
+        super().__init__(
+            api_key,
+            DEEPSEEK_API_URL,
+            DEEPSEEK_MODEL,
+            omit_temperature=preset.get("omit_temperature", False),
+            request_overrides=preset.get("request_overrides"),
+        )
 
 
 def create_chat_client(engine, api_key=None, ollama_model=None, provider=None, api_url=None, api_model=None):
@@ -127,5 +146,16 @@ def create_chat_client(engine, api_key=None, ollama_model=None, provider=None, a
     normalized = normalize_provider(provider)
     preset = PROVIDER_PRESETS.get(normalized, {})
     final_url = api_url or preset.get("chat_url") or DEEPSEEK_API_URL
-    final_model = api_model or preset.get("model")
-    return GenericOpenAIClient(api_key or "", final_url, final_model)
+    uses_preset = bool(provider) or not api_url or api_url == preset.get("chat_url")
+    final_model = (
+        resolve_provider_model(normalized, api_model)
+        if uses_preset
+        else (api_model or preset.get("model"))
+    )
+    return GenericOpenAIClient(
+        api_key or "",
+        final_url,
+        final_model,
+        omit_temperature=preset.get("omit_temperature", False) if uses_preset else False,
+        request_overrides=preset.get("request_overrides") if uses_preset else None,
+    )

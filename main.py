@@ -16,7 +16,8 @@ CONFIG_PATH = os.path.join(SCRIPT_DIR, "config.json")
 AI_AVAILABLE = False; AI_IMPORT_ERROR = ""
 scan_mod_folder = None; generate_quest_book = None
 build_full_prompt = None; import_json_to_snbt = None
-normalize_provider = None; fetch_provider_models = None; derive_models_url = None; PROVIDER_PRESETS = {}
+normalize_provider = None; resolve_provider_model = None; select_provider_model = None
+fetch_provider_models = None; derive_models_url = None; PROVIDER_PRESETS = {}
 
 LANG = "zh"
 
@@ -154,7 +155,8 @@ def t(key, *args):
 def _check_deps():
     global AI_AVAILABLE, AI_IMPORT_ERROR, scan_mod_folder, generate_quest_book
     global build_full_prompt, import_json_to_snbt
-    global normalize_provider, fetch_provider_models, PROVIDER_PRESETS, derive_models_url
+    global normalize_provider, resolve_provider_model, select_provider_model
+    global fetch_provider_models, PROVIDER_PRESETS, derive_models_url
     try: import requests
     except ImportError: AI_IMPORT_ERROR = t("dep_msg"); return False
     try:
@@ -165,6 +167,8 @@ def _check_deps():
         build_full_prompt = ai_module.build_full_prompt
         import_json_to_snbt = ai_module.import_json_to_snbt
         normalize_provider = ai_module.normalize_provider
+        resolve_provider_model = ai_module.resolve_provider_model
+        select_provider_model = ai_module.select_provider_model
         fetch_provider_models = ai_module.fetch_provider_models
         derive_models_url = ai_module.derive_models_url
         PROVIDER_PRESETS = ai_module.PROVIDER_PRESETS
@@ -552,6 +556,11 @@ class App:
         # ── 模型默认值 ──
         if not is_custom:
             default_model = preset.get("model", "")
+            current_model = self.api_model_var.get().strip()
+            if resolve_provider_model:
+                migrated_model = resolve_provider_model(provider, current_model)
+                if migrated_model != current_model:
+                    self.api_model_var.set(migrated_model)
             if default_model and (not self.api_model_var.get().strip() or (provider_changed and not preserve_model)):
                 self.api_model_var.set(default_model)
         elif provider_changed and not preserve_model:
@@ -657,10 +666,13 @@ class App:
             return
         self._fetched_models = models
         self.api_model_combo['values'] = models
-        # 如果当前模型为空或不在列表中，选第一个
+        # Keep a valid choice; otherwise prefer the provider default over an arbitrary first ID.
         cur = self.api_model_var.get().strip()
-        if not cur or cur not in models:
-            self.api_model_var.set(models[0])
+        selected = select_provider_model(provider, cur, models) if select_provider_model else cur
+        if not selected:
+            selected = models[0]
+        if selected != cur:
+            self.api_model_var.set(selected)
         count = len(models)
         self.model_fetch_label.config(text=f"✓ 获取到 {count} 个模型，可直接输入模型ID", fg="#4caf50")
 
