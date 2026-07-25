@@ -55,6 +55,8 @@ class StagedGenerationHooks:
     build_fallback: Callable[[dict, int, list[dict]], list[dict]]
     normalize_chapter: Callable[[str, list[dict]], list[dict]]
     max_tokens: Callable[[], int]
+    build_context: Callable[[dict, list[dict], str], str] | None = None
+    filter_batch: Callable[[dict, list[dict], list[dict]], list[dict]] | None = None
 
 
 class StagedGenerationService:
@@ -85,12 +87,17 @@ class StagedGenerationService:
                 attempts = 0
                 while remaining > 0 and attempts < 3:
                     existing_titles = [quest.get("title", "") for quest in quests]
+                    batch_catalog = catalog
+                    batch_wiki_text = wiki_text
+                    if self.hooks.build_context is not None:
+                        batch_catalog = self.hooks.build_context(chapter, quests, catalog)
+                        batch_wiki_text = ""
                     prompt = self.hooks.build_prompt(
                         chapter,
                         remaining,
                         existing_titles,
-                        catalog,
-                        wiki_text,
+                        batch_catalog,
+                        batch_wiki_text,
                     )
                     batch_tokens = max(3072, min(12288, remaining * 1100))
                     max_tokens = min(batch_tokens, self.hooks.max_tokens())
@@ -104,6 +111,8 @@ class StagedGenerationService:
                     )
                     parsed = [] if truncated else self.hooks.parse_batch(content)
                     parsed = self.hooks.deduplicate_batch(parsed, existing_titles)
+                    if self.hooks.filter_batch is not None:
+                        parsed = self.hooks.filter_batch(chapter, parsed, quests)
                     accepted = parsed[:remaining]
                     quests.extend(accepted)
                     remaining -= len(accepted)

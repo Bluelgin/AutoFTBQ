@@ -152,19 +152,50 @@ def _scrape_mod(mod_id):
         return None
 
 # ═══════════════════════════════════════════════════
-def build_wiki_prompt_injections(all_mods, scanned_items=None):
+def collect_wiki_knowledge(all_mods):
+    """Return cached wiki material keyed by mod ID for chapter retrieval."""
+    result = {}
+    for mod in all_mods:
+        mod_id = mod.get("mod_id", "")
+        if not mod_id:
+            continue
+        try:
+            wiki = fetch_mod_wiki(mod_id)
+        except Exception:
+            wiki = None
+        if not isinstance(wiki, dict):
+            continue
+        guide = str(wiki.get("guide_text", "") or "").strip()
+        items = str(wiki.get("items_summary", "") or "").strip()
+        if not guide and not items:
+            continue
+        result[mod_id] = {
+            "name": wiki.get("name") or mod.get("mod_name", mod_id),
+            "guide_text": guide,
+            "items_summary": items,
+        }
+    return result
+
+
+def build_wiki_prompt_injections(all_mods, scanned_items=None, wiki_knowledge=None):
     """
     构造注入 Prompt 的 Wiki 数据文本。
     all_mods: [{"mod_id": ...}, ...]
     返回: str - 可直接插入 Prompt 的文本
     """
+    del scanned_items  # Kept for compatibility with existing callers.
     lines = []
+    wiki_knowledge = (
+        collect_wiki_knowledge(all_mods)
+        if wiki_knowledge is None
+        else wiki_knowledge
+    )
     for m in all_mods:
         mod_id = m.get("mod_id", "")
         if not mod_id:
             continue
         try:
-            wiki = fetch_mod_wiki(mod_id)
+            wiki = wiki_knowledge.get(mod_id)
             if not wiki or (not wiki.get("guide_text") and not wiki.get("items_summary")):
                 continue
             name = wiki.get("name") or m.get("mod_name", "")

@@ -28,7 +28,11 @@ class ExactClient:
             quests.append({
                 "title": f"{prefix}任务 {self.counter}",
                 "subtitle": "test",
-                "tasks": [{"type": "item", "target": "minecraft:stone", "count": 1}],
+                "tasks": [{
+                    "type": "item",
+                    "target": f"minecraft:test_item_{self.counter}",
+                    "count": 1,
+                }],
                 "rewards": [],
             })
         return json.dumps({"quests": quests}, ensure_ascii=False), False

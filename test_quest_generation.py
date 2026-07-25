@@ -121,6 +121,30 @@ class QuestGenerationTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "offline"):
             service.generate()
 
+    def test_optional_context_and_filter_hooks_track_previous_batches(self):
+        client = ExactClient()
+        context_sizes = []
+        base_hooks = _hooks(3, 2)
+        hooks = StagedGenerationHooks(
+            **{
+                **base_hooks.__dict__,
+                "build_context": lambda chapter, quests, catalog: (
+                    context_sizes.append(len(quests)) or f"CTX={len(quests)}"
+                ),
+                "build_prompt": lambda chapter, count, titles, catalog, wiki: (
+                    f"EXACT_QUEST_COUNT={count}\nCATALOG={catalog}\nWIKI={wiki}"
+                ),
+                "filter_batch": lambda chapter, candidates, existing: candidates,
+            }
+        )
+        service = StagedGenerationService(client, "medium", lambda *args: None, hooks)
+
+        service.generate("GLOBAL_WIKI")
+
+        self.assertEqual(context_sizes, [0, 2])
+        self.assertIn("CTX=0", client.messages[0][1]["content"])
+        self.assertNotIn("GLOBAL_WIKI", client.messages[0][1]["content"])
+
 
 if __name__ == "__main__":
     unittest.main()

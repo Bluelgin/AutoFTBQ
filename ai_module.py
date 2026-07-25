@@ -53,6 +53,7 @@ try:
         StagedGenerationService,
         calculate_max_tokens,
     )
+    from .quest_knowledge import QuestKnowledgeBase
     from .quest_prompts import (
         build_stage_prompt,
         build_system_prompt,
@@ -101,6 +102,7 @@ except ImportError:
         StagedGenerationService,
         calculate_max_tokens,
     )
+    from quest_knowledge import QuestKnowledgeBase
     from quest_prompts import (
         build_stage_prompt,
         build_system_prompt,
@@ -614,6 +616,7 @@ class QuestBookGenerator:
         self.lang = lang
         self.prog_mods, self.util_mods, self.addon_mods, self.unk = classify_mods(selected_mods or [])
         self._all_items = None  # 扫描结果缓存
+        self._knowledge_base = None
         self.use_wiki = False
         self.max_output_tokens = max_output_tokens
 
@@ -659,6 +662,12 @@ class QuestBookGenerator:
         recipe_hints = _ms.build_recipe_chain_hints(self.all_mods, max_chains_per_mod=5)
         if recipe_hints:
             item_catalog = recipe_hints + "\n\n" + item_catalog
+
+        self._knowledge_base = QuestKnowledgeBase(
+            scanned_items,
+            dict(getattr(_ms, "_recipe_inputs_cache", {})),
+        )
+
         # 注入 Wiki 数据
         wiki_text = ""
         if getattr(self, "use_wiki", False):
@@ -666,26 +675,61 @@ class QuestBookGenerator:
                 from . import mcwiki_crawler as _wiki
             except ImportError:
                 import mcwiki_crawler as _wiki
-            wiki_text = _wiki.build_wiki_prompt_injections(self.all_mods, scanned_items)
+            wiki_knowledge = _wiki.collect_wiki_knowledge(self.all_mods)
+            wiki_text = _wiki.build_wiki_prompt_injections(
+                self.all_mods,
+                scanned_items,
+                wiki_knowledge,
+            )
+            for mod_id, wiki in wiki_knowledge.items():
+                wiki_parts = [
+                    str(wiki.get("items_summary", "") or "").strip(),
+                    str(wiki.get("guide_text", "") or "").strip(),
+                ]
+                self._knowledge_base.add_document(
+                    mod_id,
+                    "MC百科",
+                    "\n".join(part for part in wiki_parts if part),
+                    str(wiki.get("name", "") or mod_id),
+                )
             if wiki_text:
                 self._progress("已获取 MC百科 Wiki 数据", 12)
 
-        # 远程拉取 playstyle 玩法说明（GitHub raw + 本地缓存7天）
+        # 优先使用随软件发布的玩法资料，本地缺失时再从 GitHub 补充。
         playstyle_lines = []
         for m in self.all_mods:
             mod_id = m.get("mod_id", "")
             if not mod_id:
                 continue
             safe_name = mod_id.replace("/", "_").replace("\\", "_")
+            content = ""
+            local_path = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                "playstyle_data",
+                f"{safe_name}.md",
+            )
             try:
-                url = f"https://raw.githubusercontent.com/Bluelgin/AutoFTBQ/main/playstyle_data/{safe_name}.md"
-                r = requests.get(url, timeout=5)
-                if r.status_code == 200:
-                    content = r.text.strip()
-                    if content:
-                        playstyle_lines.append(f"\n[{mod_id} 玩法简介]:\n{content[:2000]}\n")
+                if os.path.isfile(local_path):
+                    with open(local_path, "r", encoding="utf-8") as file:
+                        content = file.read().strip()
             except Exception:
-                pass
+                content = ""
+            if not content:
+                try:
+                    url = f"https://raw.githubusercontent.com/Bluelgin/AutoFTBQ/main/playstyle_data/{safe_name}.md"
+                    r = requests.get(url, timeout=5)
+                    if r.status_code == 200:
+                        content = r.text.strip()
+                except Exception:
+                    content = ""
+            if content:
+                playstyle_lines.append(f"\n[{mod_id} 玩法简介]:\n{content[:2000]}\n")
+                self._knowledge_base.add_document(
+                    mod_id,
+                    "人工玩法说明",
+                    content,
+                    m.get("mod_name", mod_id),
+                )
 
         if playstyle_lines:
             if wiki_text:
@@ -808,6 +852,28 @@ class QuestBookGenerator:
         catalog = _ms.build_item_catalog_for_prompt(self._all_items or {}, selected)
         return catalog
 
+    def _ensure_knowledge_base(self):
+        if self._knowledge_base is None:
+            self._knowledge_base = QuestKnowledgeBase(
+                self._all_items or {},
+                dict(getattr(_ms, "_recipe_inputs_cache", {})),
+            )
+        return self._knowledge_base
+
+    def _build_chapter_context(self, chapter, existing_quests, catalog):
+        return self._ensure_knowledge_base().build_context(
+            chapter,
+            existing_quests,
+            catalog,
+        )
+
+    def _filter_stage_quests(self, chapter, quests, existing_quests):
+        return self._ensure_knowledge_base().filter_new_quests(
+            chapter,
+            quests,
+            existing_quests,
+        )
+
     def _parse_generated_quests(self, text):
         return parse_quest_batch(text)
 
@@ -845,6 +911,8 @@ class QuestBookGenerator:
             build_fallback=self._fallback_stage_quests,
             normalize_chapter=self._normalize_chapter_quests,
             max_tokens=self._calc_max_tokens,
+            build_context=self._build_chapter_context,
+            filter_batch=self._filter_stage_quests,
         )
         service = StagedGenerationService(
             self.client,
@@ -856,7 +924,7 @@ class QuestBookGenerator:
 
     def _generate_questbook(self, mod_list, all_ns, item_catalog="", wiki_text=""):
         """Generate only in deterministic batches so density remains enforceable."""
-        return self._generate_questbook_staged(wiki_text)
+        return self._generate_questbook_staged()
 
     def _generate_questbook_legacy(self, mod_list, all_ns, item_catalog="", wiki_text=""):
         """Original whole-book generation pipeline retained as a compatibility fallback."""
