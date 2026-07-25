@@ -7,7 +7,7 @@
 ![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)
 ![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey.svg)
 ![License](https://img.shields.io/badge/License-GPL--3.0-green.svg)
-![Version](https://img.shields.io/badge/Version-1.3.4-orange.svg)
+![Version](https://img.shields.io/badge/Version-1.3.5-orange.svg)
 [![Downloads](https://img.shields.io/github/downloads/Bluelgin/AutoFTBQ/total?color=blue&label=Downloads)](https://github.com/Bluelgin/AutoFTBQ/releases)
 
 ## 先说它能做什么
@@ -24,12 +24,12 @@
 
 > 目前稳定版支持 DeepSeek、Ollama，以及手动配置的 OpenAI 兼容 API。第三方服务没有统一的模型列表和错误格式，所以自定义 API 需要用户自己填写并确认参数。
 
-## v1.3.4 更新
+## v1.3.5 更新
 
-- 分阶段定额生成更稳定，任务密度不再只依赖 AI 自己计数。
-- 完善 KubeJS 扫描、自定义 API 和 Ollama 返回兼容。
-- 修复部分 SNBT 写入、物品引用以及 EXE 启动问题。
-- 拆分任务规划、提示词、解析和生成流程，方便后续继续维护。
+- 优化章节级知识检索，每个 Mod 会优先读取自己的物品、配方、Wiki 与玩法资料。
+- 加入任务覆盖记录，减少 AI 在不同批次里换个标题重复生成相同目标。
+- 配方链按入门到进阶顺序提供给 AI，任务流程更连贯。
+- 更新常用服务的预设模型，并优化本地玩法资料读取与整体生成稳定性。
 
 ## 软件工作流程
 
