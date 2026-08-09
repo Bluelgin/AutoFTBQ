@@ -7,7 +7,7 @@
 ![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)
 ![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey.svg)
 ![License](https://img.shields.io/badge/License-GPL--3.0-green.svg)
-![Version](https://img.shields.io/badge/Version-1.3.5-orange.svg)
+![Version](https://img.shields.io/badge/Version-1.3.6-orange.svg)
 [![Downloads](https://img.shields.io/github/downloads/Bluelgin/AutoFTBQ/total?color=blue&label=Downloads)](https://github.com/Bluelgin/AutoFTBQ/releases)
 
 ## 先说它能做什么
@@ -24,12 +24,66 @@
 
 > 目前稳定版支持 DeepSeek、Ollama，以及手动配置的 OpenAI 兼容 API。第三方服务没有统一的模型列表和错误格式，所以自定义 API 需要用户自己填写并确认参数。
 
-## v1.3.5 更新
+## v1.3.6 更新
 
-- 优化章节级知识检索，每个 Mod 会优先读取自己的物品、配方、Wiki 与玩法资料。
-- 加入任务覆盖记录，减少 AI 在不同批次里换个标题重复生成相同目标。
-- 配方链按入门到进阶顺序提供给 AI，任务流程更连贯。
-- 更新常用服务的预设模型，并优化本地玩法资料读取与整体生成稳定性。
+- 加入主题化章节与人工任务书布局：常规章节使用工整横向主线，魔法与伙伴保留六向雪花，Boss 使用树状分支。
+- 修复 FTB Quests 任务 ID 超出有符号 long 范围后被游戏重置、依赖连线丢失的问题。
+- 加入 Mod 搜索和可选 AI 文案润色，并改进任务覆盖记录与章节级玩法资料检索。
+- 完善 KubeJS、SNBT、第三方 API、更新检查和 Windows EXE 打包稳定性。
+
+## 人工风格布局与文案润色
+
+AI 初版任务书的结构和文案往往偏"机械感"：任务挤在一两条直线上、描述是一句话流水账。AutoFTBQ 现在内置了人工任务书风格优化：
+
+### 布局重排（自动生效）
+
+生成后程序会先把相关任务整理成 4～6 个任务的小组，再按章节主题选择稳定、易读的布局模板：
+
+- 常规章节使用工整的横向分组，主线严格对齐，多行之间折返衔接
+- 魔法与伙伴章节保留独特的六向“雪花”结构，高任务量也不会缩减内容
+- Boss 章节使用层级清晰的树状分支
+- KubeJS 自定义内容会按任务关系并入对应的横向分组
+- 主线、支线、Boss、阶段里程碑和信息卡使用不同形状表达语义
+- 只有真正的说明、指南任务会进入独立信息栏，普通勾选任务仍保留在流程中
+- 坐标完全由固定网格计算，不再加入随机抖动，并自动控制重叠、长连线和交叉
+
+### 章节组织（按玩法主题融合）
+
+章节不再按 Mod 单独开一章，而是按人工任务书的习惯用玩法主题组织，原版内容与 Mod 内容融合在同一条任务线里：
+
+- 新手开局（原版生存起步 + 背包/地图等实用工具）
+- 农业与美食（原版种植 + 食物类 Mod）
+- 矿业与资源（原版挖矿 + 存储/矿石类 Mod）
+- 科技与自动化（红石 + 科技类 Mod）
+- 魔法与附魔（附魔/酿造 + 魔法类 Mod）
+- 养成与伙伴（宠物/村民 + 女仆等养成 Mod）
+- 探索与维度（下界/末地 + 维度类 Mod）
+- Boss 挑战（原版 Boss + 生物/挑战类 Mod）
+
+章节按固定顺序生成；原版核心主题始终保留，仅没有内容的可选扩展主题会跳过。
+
+### AI 文案润色（可选）
+
+软件内置了从 6 个整合包、7000+ 个人工任务整理出的压缩语料。AI 会按任务类型挑选接近的写法示例，逐章润色每个任务的 subtitle（副标题）和 description（描述），让它读起来更像人类作者写的：口语化、副标题点睛、描述给实用干货、适度使用颜色代码。发布版不需要额外准备 `example_all/` 目录。
+
+润色是补丁式的：只允许修改 subtitle 和 description，任务 ID、依赖、坐标、物品 ID 全部锁定，程序侧逐条校验。
+
+软件界面提供了“AI 文案润色”开关，默认关闭。这个功能会产生额外 AI 请求，token 充足、确实想继续打磨文案时再试即可。
+
+也可以对已有的任务书单独运行（需要有效 API Key 或本地 Ollama）：
+
+```bash
+# 只重排布局
+python polish_quests.py --input quests --output questbook_output
+
+# 重排 + AI 润色（用 config.json 里的 API 配置）
+python polish_quests.py --input quests --output questbook_output --polish
+
+# 原地更新，不产生新目录
+python polish_quests.py --input quests --in-place --polish
+```
+
+润色完成后会生成 `polish_report.txt`，记录每个章节应用了多少条补丁。
 
 ## 软件工作流程
 
@@ -235,7 +289,7 @@ ollama pull qwen2.5-coder:7b
 
 ### 更新检查失败或卡住
 
-软件会从 GitHub 获取版本信息。网络无法访问 GitHub 时，更新检查可能失败，但不应该影响任务生成。也可以直接从 [Releases](https://github.com/Bluelgin/AutoFTBQ/releases) 手动下载最新版。
+软件会依次从 GitHub Raw、jsDelivr 和 GitHub Release API 获取版本信息，单个来源不可用时会自动切换。全部来源都无法访问时，更新检查会显示失败，但不会影响任务生成；也可以直接从 [Releases](https://github.com/Bluelgin/AutoFTBQ/releases) 手动下载最新版。
 
 ## 项目结构
 
@@ -247,6 +301,11 @@ ollama pull qwen2.5-coder:7b
 | `ollama_adapter.py` | Ollama 检测、模型选择和本地 HTTP 调用 |
 | `mcwiki_crawler.py` | 可选的 Minecraft Wiki 辅助信息抓取 |
 | `playstyle_data/` | 常见 Mod 的玩法提示资料 |
+| `snbt_parser.py` | FTB Quests SNBT 文件的读取/写入 |
+| `human_corpus.py` | 从 example_all 提取人工任务语料与风格检索 |
+| `quest_layout.py` | 人工风格布局重排（主线/分支/信息任务） |
+| `quest_polish.py` | AI 文案润色管线（补丁式输出+结构校验） |
+| `polish_quests.py` | 命令行：对已有任务书重排/润色 |
 | `test_*.py` | KubeJS、SNBT、分阶段生成和更新模块测试 |
 
 ## 参与贡献

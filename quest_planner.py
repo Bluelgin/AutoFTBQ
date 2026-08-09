@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 
@@ -58,71 +59,20 @@ def build_generation_plan(
     all_mods: list[dict],
     kubejs_namespaces: set[str] | None = None,
 ) -> list[dict]:
-    """Build chapter-level integer quotas owned by the application."""
-    config = DENSITY_CONFIGS.get(density, DENSITY_CONFIGS["medium"])
-    topic_count = 4 if density in ("light", "medium") else 5
-    topics = VANILLA_TOPICS[:topic_count]
-    base, extra = divmod(config["vanilla"], len(topics))
-    plan = []
-
-    for index, (chapter_id, title, focus) in enumerate(topics):
-        plan.append({
-            "id": chapter_id,
-            "title": title,
-            "focus": focus,
-            "target": base + (1 if index < extra else 0),
-            "mods": [],
-            "namespaces": ["minecraft"],
-        })
-
-    for mod in progression_mods + unknown_mods:
-        mod_id = mod.get("mod_id", "unknown")
-        mod_name = mod.get("mod_name", mod_id)
-        plan.append({
-            "id": f"mod_{mod_id}",
-            "title": mod_name,
-            "focus": f"完整覆盖 {mod_name} 从入门到精通的玩法与配方链",
-            "target": config["core"],
-            "mods": [mod],
-            "namespaces": [mod_id],
-        })
-
-    for group_index in range(0, len(utility_mods), 5):
-        group = utility_mods[group_index:group_index + 5]
-        if not group:
-            continue
-        names = "、".join(mod.get("mod_name", mod.get("mod_id", "")) for mod in group)
-        plan.append({
-            "id": f"utility_{group_index // 5 + 1}",
-            "title": "实用工具与生活" if group_index == 0 else f"实用工具与生活 {group_index // 5 + 1}",
-            "focus": f"介绍并实际使用这些辅助模组：{names}",
-            "target": max(4, config["utility"] * len(group)),
-            "mods": group,
-            "namespaces": [mod.get("mod_id", "") for mod in group if mod.get("mod_id")],
-        })
-
-    known_namespaces = {mod.get("mod_id", "") for mod in all_mods}
-    custom_namespaces = sorted(
-        namespace
-        for namespace in (kubejs_namespaces or set())
-        if namespace not in known_namespaces
+    """Build theme-driven chapters in fixed order, skipping empty themes."""
+    try:
+        from quest_themes import build_theme_plan
+    except ImportError:
+        from .quest_themes import build_theme_plan
+    return build_theme_plan(
+        density,
+        progression_mods,
+        utility_mods,
+        unknown_mods,
+        all_mods,
+        kubejs_namespaces,
     )
-    if custom_namespaces:
-        plan.append({
-            "id": "kubejs_custom",
-            "title": "整合包自定义内容",
-            "focus": "覆盖 KubeJS 自定义物品、魔改配方和关键生产链",
-            "target": config["core"],
-            "mods": [
-                {"mod_id": namespace, "mod_name": f"KubeJS {namespace}"}
-                for namespace in custom_namespaces
-            ],
-            "namespaces": custom_namespaces,
-        })
 
-    for chapter in plan:
-        chapter["batch_size"] = config["batch"]
-    return plan
 
 
 def deduplicate_stage_quests(quests: list[dict], existing_titles=None) -> list[dict]:
@@ -200,50 +150,281 @@ def build_fallback_quests(
     return result
 
 
+def _task_types(quest: dict) -> set[str]:
+    result = set()
+    for task in quest.get("tasks", []):
+        if not isinstance(task, dict):
+            continue
+        task_type = str(task.get("type", "")).lower().split(":", 1)[-1]
+        if task_type:
+            result.add(task_type)
+    return result
+
+
+def _primary_namespace(quest: dict) -> str:
+    for task in quest.get("tasks", []):
+        if not isinstance(task, dict):
+            continue
+        target = (
+            task.get("target")
+            or task.get("item")
+            or task.get("entity")
+            or task.get("advancement")
+            or ""
+        )
+        if isinstance(target, dict):
+            target = target.get("id", "")
+        if isinstance(target, str) and ":" in target:
+            return target.split(":", 1)[0].lower()
+    return ""
+
+
+def _is_summary_quest(quest: dict) -> bool:
+    title = str(quest.get("title", "")).lower()
+    keywords = (
+        "总结", "里程碑", "完成本章", "最终", "终章",
+        "summary", "milestone", "chapter complete", "finale",
+    )
+    return bool(_task_types(quest) <= {"checkmark"}) and any(
+        keyword in title for keyword in keywords
+    )
+
+
+def _is_info_quest(quest: dict) -> bool:
+    task_types = _task_types(quest)
+    if task_types and not task_types <= {"checkmark"}:
+        return False
+    title = str(quest.get("title", "")).lower()
+    shape = str(quest.get("shape", "")).lower()
+    info_keywords = (
+        "说明", "提示", "指南", "须知", "介绍", "关于", "欢迎",
+        "guide", "info", "note", "tips", "read me", "welcome",
+    )
+    return shape == "gear" or any(keyword in title for keyword in info_keywords)
+
+
+def _is_boss_quest(chapter_id: str, quest: dict) -> bool:
+    title = str(quest.get("title", "")).lower()
+    if any(keyword in title for keyword in ("boss", "首领", "领主", "最终战")):
+        return True
+    return chapter_id.startswith("theme_boss") and "kill" in _task_types(quest)
+
+
+def _split_layout_groups(quests: list[dict]) -> list[list[dict]]:
+    """Keep related namespaces together without creating oversized clusters."""
+    groups: list[list[dict]] = []
+    current: list[dict] = []
+    group_namespace = ""
+    for quest in quests:
+        namespace = _primary_namespace(quest)
+        namespace_changed = (
+            len(current) >= 4
+            and namespace
+            and group_namespace
+            and namespace != group_namespace
+        )
+        if current and (len(current) >= 6 or namespace_changed):
+            groups.append(current)
+            current = []
+            group_namespace = ""
+        current.append(quest)
+        if namespace and namespace != "minecraft" and not group_namespace:
+            group_namespace = namespace
+        elif namespace and not group_namespace:
+            group_namespace = namespace
+    if current:
+        groups.append(current)
+    return groups
+
+
+def _split_snowflake_arms(quests: list[dict]) -> list[list[dict]]:
+    """Build up to six balanced arms while keeping namespace order intact."""
+    namespace_buckets: dict[str, list[dict]] = {}
+    for quest in quests:
+        namespace = _primary_namespace(quest) or "__general__"
+        namespace_buckets.setdefault(namespace, []).append(quest)
+    arms = list(namespace_buckets.values())
+
+    while len(arms) > 6:
+        smallest_index = min(range(len(arms)), key=lambda index: len(arms[index]))
+        smallest = arms.pop(smallest_index)
+        target_index = min(range(len(arms)), key=lambda index: len(arms[index]))
+        arms[target_index].extend(smallest)
+
+    desired = min(6, max(3, math.ceil(len(quests) / 18))) if quests else 0
+    while len(arms) < desired:
+        largest_index = max(range(len(arms)), key=lambda index: len(arms[index]))
+        largest = arms[largest_index]
+        if len(largest) < 4:
+            break
+        midpoint = math.ceil(len(largest) / 2)
+        arms[largest_index:largest_index + 1] = [largest[:midpoint], largest[midpoint:]]
+    return arms
+
+
 def normalize_chapter_quests(chapter_id: str, quests: list[dict]) -> list[dict]:
-    """Own IDs, dependencies, and coordinates after model batches merge."""
-    normalized = []
-    main_ids = []
-    branches = []
+    """Build a compact semantic graph after independently generated batches merge."""
+    normalized: list[dict] = []
     for original in quests:
         if not isinstance(original, dict):
             continue
         quest = dict(original)
+        for key in [key for key in quest if key.startswith("_layout_")]:
+            quest.pop(key, None)
         quest_id = f"{chapter_id}_q_{len(normalized) + 1:03d}"
         quest["id"] = quest_id
-        title = str(quest.get("title", ""))
-        shape = str(quest.get("shape", "")).lower()
-        is_branch = (
-            "支线" in title
-            or "branch" in title.lower()
-            or shape in ("diamond", "circle", "hexagon")
-        )
-        quest.pop("dependencies", None)
-        if is_branch:
-            branches.append(quest)
-        else:
-            if main_ids:
-                quest["dependencies"] = [main_ids[-1]]
-            quest["x"] = float(len(main_ids) * 2)
-            quest["y"] = 0.0
-            quest["shape"] = "square"
-            main_ids.append(quest_id)
+        quest["dependencies"] = []
+        quest["x"] = 0.0
+        quest["y"] = 0.0
         normalized.append(quest)
 
-    if not main_ids:
-        for index, quest in enumerate(normalized):
-            quest["x"] = float(index * 2)
-            quest["y"] = 0.0
-            quest["shape"] = "square"
-            if index:
-                quest["dependencies"] = [normalized[index - 1]["id"]]
+    if not normalized:
         return normalized
 
-    for branch_index, quest in enumerate(branches):
-        anchor_index = min(branch_index, len(main_ids) - 1)
-        quest["dependencies"] = [main_ids[anchor_index]]
-        quest["x"] = float(anchor_index * 2)
-        level = branch_index // max(1, len(main_ids)) + 1
-        quest["y"] = float((-1 if branch_index % 2 == 0 else 1) * 2 * level)
-        quest["shape"] = "diamond"
+    summary_candidates = [quest for quest in normalized if _is_summary_quest(quest)]
+    milestone = summary_candidates[-1] if summary_candidates else None
+    info_quests = [
+        quest for quest in normalized
+        if _is_info_quest(quest) and quest is not milestone
+    ]
+    content_quests = [
+        quest for quest in normalized
+        if quest not in info_quests and quest is not milestone
+    ]
+
+    # A fallback-only chapter still needs a connected progression.
+    if not content_quests:
+        content_quests = list(normalized)
+        info_quests = []
+        milestone = None
+
+    try:
+        from quest_layout import layout_style_for_chapter
+    except ImportError:
+        from .quest_layout import layout_style_for_chapter
+    style = layout_style_for_chapter(chapter_id, len(normalized))
+
+    if style == "snowflake":
+        hub = content_quests[0]
+        hub["dependencies"] = []
+        hub["_layout_group"] = -1
+        hub["_layout_arm"] = -1
+        hub["_layout_order"] = 0
+        hub["_layout_role"] = "hub"
+        hub["shape"] = "hexagon"
+
+        arms = _split_snowflake_arms(content_quests[1:])
+        arm_endpoints: list[str] = []
+        for arm_index, arm in enumerate(arms):
+            previous_main = hub["id"]
+            for arm_order, quest in enumerate(arm):
+                step, position = divmod(arm_order, 3)
+                if position == 0:
+                    role = "main"
+                    dependencies = [previous_main]
+                    previous_main = quest["id"]
+                    side = 0
+                else:
+                    role = "branch"
+                    dependencies = [previous_main]
+                    side = -1 if position == 1 else 1
+                quest["dependencies"] = dependencies
+                quest["_layout_group"] = arm_index
+                quest["_layout_arm"] = arm_index
+                quest["_layout_order"] = arm_order
+                quest["_layout_step"] = step
+                quest["_layout_side"] = side
+                quest["_layout_role"] = role
+                quest["shape"] = "square" if role == "main" else "diamond"
+            arm_endpoints.append(previous_main)
+
+        for index, quest in enumerate(info_quests):
+            quest["dependencies"] = []
+            quest["_layout_role"] = "info"
+            quest["_layout_order"] = index
+            quest["shape"] = "gear"
+
+        if milestone is not None:
+            target_arm = max(range(len(arms)), key=lambda index: len(arms[index])) if arms else 0
+            endpoint = arm_endpoints[target_arm] if arm_endpoints else hub["id"]
+            milestone["dependencies"] = [endpoint]
+            milestone["_layout_group"] = target_arm
+            milestone["_layout_arm"] = target_arm
+            milestone["_layout_step"] = math.ceil(len(arms[target_arm]) / 3) if arms else 1
+            milestone["_layout_side"] = 0
+            milestone["_layout_role"] = "milestone"
+            milestone["_layout_order"] = len(normalized)
+            milestone["shape"] = "hexagon"
+        return normalized
+
+    groups = _split_layout_groups(content_quests)
+    group_exits: list[str] = []
+    group_roots: list[str] = []
+
+    for group_index, group in enumerate(groups):
+        if group_index == 0:
+            parent_id = None
+        elif style == "tree":
+            parent_id = group_exits[(group_index - 1) // 2]
+        else:
+            columns = 4
+            parent_id = (
+                group_roots[-1]
+                if group_index % columns == 0
+                else group_exits[-1]
+            )
+
+        main_candidates: list[str] = []
+        for local_index, quest in enumerate(group):
+            explicit_branch = (
+                "支线" in str(quest.get("title", ""))
+                or "branch" in str(quest.get("title", "")).lower()
+                or str(quest.get("shape", "")).lower() in ("diamond", "circle")
+            )
+            role = "main" if local_index in (0, 1, 3) and not explicit_branch else "branch"
+            if _is_boss_quest(chapter_id, quest):
+                role = "boss"
+
+            if local_index == 0:
+                dependencies = [parent_id] if parent_id else []
+            elif local_index in (1, 2):
+                dependencies = [group[0]["id"]]
+            elif local_index == 3:
+                dependencies = [group[1]["id"]]
+            elif local_index == 4:
+                dependencies = [group[1]["id"]]
+            else:
+                dependencies = [group[min(3, local_index - 1)]["id"]]
+
+            quest["dependencies"] = dependencies
+            quest["_layout_group"] = group_index
+            quest["_layout_order"] = local_index
+            quest["_layout_role"] = role
+            quest["shape"] = {
+                "main": "square",
+                "branch": "diamond" if local_index % 2 == 0 else "circle",
+                "boss": "hexagon",
+            }[role]
+            if role in ("main", "boss"):
+                main_candidates.append(quest["id"])
+        if style == "tree":
+            # The final node is the visual tip of a Boss branch; continuing
+            # from an earlier side node can cut straight across the cluster.
+            group_exits.append(group[-1]["id"])
+        else:
+            group_exits.append(main_candidates[-1] if main_candidates else group[-1]["id"])
+        group_roots.append(group[0]["id"])
+
+    for index, quest in enumerate(info_quests):
+        quest["dependencies"] = []
+        quest["_layout_role"] = "info"
+        quest["_layout_order"] = index
+        quest["shape"] = "gear"
+
+    if milestone is not None:
+        milestone["dependencies"] = [group_exits[-1]] if group_exits else []
+        milestone["_layout_role"] = "milestone"
+        milestone["_layout_order"] = len(normalized)
+        milestone["shape"] = "hexagon"
+
     return normalized

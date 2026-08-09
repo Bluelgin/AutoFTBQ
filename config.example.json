@@ -9,5 +9,6 @@
     "mod_folder": "E:/your-minecraft-instance/mods",
     "output_dir": "",
     "density": "medium",
-    "max_output_tokens": ""
+    "max_output_tokens": "",
+    "polish_after_generate": false
 }

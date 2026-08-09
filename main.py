@@ -10,7 +10,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
-APP_NAME = "AutoFTBQ"; VERSION = "1.3.5"; AUTHOR = "Taki"
+APP_NAME = "AutoFTBQ"; VERSION = "1.3.6"; AUTHOR = "Taki"
 CONFIG_PATH = os.path.join(SCRIPT_DIR, "config.json")
 
 AI_AVAILABLE = False; AI_IMPORT_ERROR = ""
@@ -29,7 +29,12 @@ ollama_best_model = None
 CAT_LABEL = {"vanilla":"原版","tech":"科技","magic":"魔法","world":"维度/Boss","mob":"生物","utility":"辅助","food":"食物","decor":"装饰","unknown":"未知"}
 
 # ── 版本检测 ──
-UPDATE_URL = "https://raw.githubusercontent.com/Bluelgin/AutoFTBQ/main/update.json"
+UPDATE_URL = "https://raw.githubusercontent.com/Bluelgin/AutoFTBQ/master/update.json"
+UPDATE_URLS = (
+    UPDATE_URL,
+    "https://cdn.jsdelivr.net/gh/Bluelgin/AutoFTBQ@master/update.json",
+)
+GITHUB_RELEASE_API = "https://api.github.com/repos/Bluelgin/AutoFTBQ/releases/latest"
 QUARK_FALLBACK_URL = "https://pan.quark.cn/s/25387b63a76c"
 
 def _parse_version(ver_str):
@@ -43,17 +48,61 @@ def check_for_update(current_version, callback=None):
     """Asynchronously check for an update and always finish with one callback."""
     def _run():
         latest = None
-        info = {"github_url": "", "quark_url": "", "changelog": "", "error": ""}
+        info = {
+            "github_url": "",
+            "quark_url": "",
+            "changelog": "",
+            "error": "",
+            "source": "",
+        }
         try:
             import requests
-            resp = requests.get(
-                UPDATE_URL,
-                params={"_": str(int(time.time()))},
-                timeout=(3, 8),
-                headers={"Cache-Control": "no-cache", "User-Agent": "AutoFTBQ"},
-            )
-            resp.raise_for_status()
-            data = resp.json()
+            errors = []
+            data = None
+            sources = UPDATE_URLS + (GITHUB_RELEASE_API,)
+            for source in sources:
+                try:
+                    response = requests.get(
+                        source,
+                        params={"_": str(int(time.time()))},
+                        timeout=(2, 4),
+                        headers={
+                            "Accept": "application/vnd.github+json",
+                            "Cache-Control": "no-cache",
+                            "User-Agent": "AutoFTBQ",
+                        },
+                    )
+                    response.raise_for_status()
+                    payload = response.json()
+                    if not isinstance(payload, dict):
+                        raise ValueError("更新源返回的不是 JSON 对象")
+                    if source == GITHUB_RELEASE_API:
+                        assets = payload.get("assets", [])
+                        exe_url = ""
+                        if isinstance(assets, list):
+                            for asset in assets:
+                                if not isinstance(asset, dict):
+                                    continue
+                                name = str(asset.get("name", "")).lower()
+                                if name.endswith(".exe"):
+                                    exe_url = str(asset.get("browser_download_url", ""))
+                                    break
+                        payload = {
+                            "version": payload.get("tag_name", ""),
+                            "github_url": exe_url or payload.get("html_url", ""),
+                            "quark_url": QUARK_FALLBACK_URL,
+                            "changelog": payload.get("body", ""),
+                        }
+                    if not str(payload.get("version", "")).strip():
+                        raise ValueError("更新源缺少版本号")
+                    data = payload
+                    info["source"] = source
+                    break
+                except Exception as source_error:
+                    errors.append(f"{source}: {source_error}")
+            if data is None:
+                raise RuntimeError("所有更新源均不可用；" + "；".join(errors))
+
             latest = str(data.get("version", "")).strip()
             legacy_url = str(data.get("download_url", "")).strip()
             info["github_url"] = str(data.get("github_url", "")).strip()
@@ -175,20 +224,66 @@ def _check_deps():
         AI_AVAILABLE = True; return True
     except Exception as e: AI_IMPORT_ERROR = str(e); return False
 
+def _mod_matches_query(mod, query):
+    query = str(query or "").strip().casefold()
+    if not query:
+        return True
+    category = str(mod.get("category", "unknown"))
+    fields = (
+        mod.get("mod_name", ""),
+        mod.get("mod_id", ""),
+        mod.get("filename", ""),
+        category,
+        CAT_LABEL.get(category, ""),
+    )
+    return any(query in str(value).casefold() for value in fields)
+
+
 class ModSelectDialog(tk.Toplevel):
-    def __init__(self, parent, mods):
+    def __init__(self, parent, mods, selected_filenames=None):
         super().__init__(parent)
         self.title("选择要生成任务书的 Mod")
-        self.geometry("620x480")
+        self.geometry("680x540")
         self.resizable(False, False)
         self.configure(bg="#ffffff")
         self.result = []
+        self._mods = list(mods)
+        self._visible_mods = []
+        self._selected_filenames = set(selected_filenames or [])
+        self._rebuilding = False
 
         try:
             tk.Label(self, text="勾选要包含在任务书中的 Mod：",
                      font=("Microsoft YaHei", 12, "bold"), bg="#ffffff", fg="#333333").pack(pady=(15, 5))
             tk.Label(self, text=f"检测到 {len(mods)} 个Mod — 请选择需要的Mod（可多选）",
                      font=("Microsoft YaHei", 9), bg="#ffffff", fg="#888888").pack(pady=(0, 10))
+
+            search_frame = tk.Frame(self, bg="#ffffff")
+            search_frame.pack(fill=tk.X, padx=20, pady=(0, 8))
+            tk.Label(
+                search_frame,
+                text="搜索 Mod：",
+                font=("Microsoft YaHei", 9),
+                bg="#ffffff",
+                fg="#555555",
+            ).pack(side=tk.LEFT)
+            self._search_var = tk.StringVar()
+            self._search_entry = tk.Entry(
+                search_frame,
+                textvariable=self._search_var,
+                font=("Microsoft YaHei", 10),
+                relief=tk.SOLID,
+                bd=1,
+            )
+            self._search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=4)
+            tk.Button(
+                search_frame,
+                text="清除搜索",
+                command=lambda: self._search_var.set(""),
+                bg="#eeeeee",
+                font=("Microsoft YaHei", 9),
+                padx=8,
+            ).pack(side=tk.LEFT, padx=(8, 0))
 
             frame = tk.Frame(self, bg="#ffffff")
             frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=(0, 10))
@@ -199,17 +294,27 @@ class ModSelectDialog(tk.Toplevel):
                                   activestyle="none", exportselection=False)
             self._lb.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
             scrollbar.config(command=self._lb.yview)
-            self._mods = mods
-            for i, m in enumerate(mods):
-                cat_cn = CAT_LABEL.get(m.get("category", "unknown"), "?")
-                size_mb = m.get("size", 0) / (1024*1024)
-                label = f"{m['mod_name']:30s} [{cat_cn}]  ({size_mb:.1f}MB)"
-                self._lb.insert(tk.END, label)
+            self._lb.bind("<<ListboxSelect>>", self._on_listbox_select)
+
+            self._count_label = tk.Label(
+                self,
+                text="",
+                font=("Microsoft YaHei", 9),
+                bg="#ffffff",
+                fg="#666666",
+                anchor="w",
+            )
+            self._count_label.pack(fill=tk.X, padx=20, pady=(0, 8))
+
+            self._search_var.trace_add("write", self._on_search_changed)
+            self._rebuild_list()
 
             btnf = tk.Frame(self, bg="#ffffff")
             btnf.pack(fill=tk.X, pady=(0, 15), padx=20)
-            tk.Button(btnf, text="全选", command=self._select_all, bg="#e0e0e0",
+            tk.Button(btnf, text="全选当前结果", command=self._select_all, bg="#e0e0e0",
                       font=("Microsoft YaHei", 10), padx=10).pack(side=tk.LEFT)
+            tk.Button(btnf, text="清空当前结果", command=self._clear_visible, bg="#eeeeee",
+                      font=("Microsoft YaHei", 10), padx=10).pack(side=tk.LEFT, padx=(8, 0))
             tk.Button(btnf, text="确定", command=self._on_ok, bg="#4caf50", fg="#ffffff",
                       font=("Microsoft YaHei", 11, "bold"), padx=30, pady=5).pack(side=tk.RIGHT)
             tk.Button(btnf, text="取消", command=self._on_cancel, bg="#cccccc", fg="#ffffff",
@@ -219,6 +324,7 @@ class ModSelectDialog(tk.Toplevel):
             self.grab_set()
             self.protocol("WM_DELETE_WINDOW", self._on_cancel)
             self._center(parent)
+            self._search_entry.focus_set()
         except Exception as e:
             messagebox.showerror("错误", f"无法创建Mod选择窗口: {e}")
             self.result = None
@@ -234,15 +340,71 @@ class ModSelectDialog(tk.Toplevel):
         except Exception:
             pass
 
+    def _sync_visible_selection(self):
+        if self._rebuilding:
+            return
+        selected_indices = set(self._lb.curselection())
+        for index, mod in enumerate(self._visible_mods):
+            filename = mod.get("filename")
+            if index in selected_indices:
+                self._selected_filenames.add(filename)
+            else:
+                self._selected_filenames.discard(filename)
+
+    def _update_count(self):
+        self._count_label.config(
+            text=f"当前显示 {len(self._visible_mods)} 个  |  已选择 {len(self._selected_filenames)} 个"
+        )
+
+    def _rebuild_list(self):
+        self._sync_visible_selection()
+        query = self._search_var.get()
+        self._visible_mods = [
+            mod for mod in self._mods if _mod_matches_query(mod, query)
+        ]
+        self._rebuilding = True
+        try:
+            self._lb.delete(0, tk.END)
+            for index, mod in enumerate(self._visible_mods):
+                cat_cn = CAT_LABEL.get(mod.get("category", "unknown"), "?")
+                size_mb = mod.get("size", 0) / (1024 * 1024)
+                label = f"{mod['mod_name']:30s} [{cat_cn}]  ({size_mb:.1f}MB)"
+                self._lb.insert(tk.END, label)
+                if mod.get("filename") in self._selected_filenames:
+                    self._lb.selection_set(index)
+        finally:
+            self._rebuilding = False
+        self._update_count()
+
+    def _on_search_changed(self, *_):
+        self._rebuild_list()
+
+    def _on_listbox_select(self, _event=None):
+        self._sync_visible_selection()
+        self._update_count()
+
     def _select_all(self):
+        for mod in self._visible_mods:
+            self._selected_filenames.add(mod.get("filename"))
         self._lb.selection_set(0, tk.END)
+        self._update_count()
+
+    def _clear_visible(self):
+        for mod in self._visible_mods:
+            self._selected_filenames.discard(mod.get("filename"))
+        self._lb.selection_clear(0, tk.END)
+        self._update_count()
 
     def _on_ok(self):
-        selected = self._lb.curselection()
-        if not selected:
+        self._sync_visible_selection()
+        if not self._selected_filenames:
             messagebox.showwarning("提示", "请至少选择一个 Mod。")
             return
-        self.result = [self._mods[i]["filename"] for i in selected]
+        self.result = [
+            mod["filename"]
+            for mod in self._mods
+            if mod.get("filename") in self._selected_filenames
+        ]
         self.destroy()
 
     def _on_cancel(self):
@@ -344,7 +506,8 @@ class App:
         # 清除临时尺寸，根据模式重新设置
         for widget in self.root.winfo_children():
             widget.destroy()
-        self.root.resizable(False, False)
+        self.root.resizable(True, True)
+        self.root.minsize(560, 560)
         self.root.configure(bg="#ffffff")
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
@@ -362,9 +525,15 @@ class App:
         self.ollama_model_var = tk.StringVar(value=self.config.get("ollama_model", ""))
         self.output_dir_var = tk.StringVar(value=self.config.get("output_dir", ""))
         self.use_wiki_var = tk.BooleanVar(value=self.config.get("use_wiki", False))
+        self.polish_after_generate_var = tk.BooleanVar(
+            value=self.config.get("polish_after_generate", False)
+        )
         self.max_output_tokens_var = tk.StringVar(value=self.config.get("max_output_tokens", ""))
         self.generating = False
         self._update_checking = False
+        self._update_checked = False
+        self._update_request_id = 0
+        self._pending_update_result = None
         self.selected_mods = []
         self._detected_mods = []
 
@@ -421,6 +590,23 @@ class App:
             except Exception: pass
         return {}
 
+    def _initial_window_size(self):
+        """Prefer the user's saved size, otherwise fit the current screen."""
+        saved = self.config.get("window_size")
+        if isinstance(saved, (list, tuple)) and len(saved) == 2:
+            try:
+                saved_w, saved_h = int(saved[0]), int(saved[1])
+                if saved_w >= 560 and saved_h >= 560:
+                    return saved_w, saved_h
+            except (TypeError, ValueError):
+                pass
+        screen_w = self.root.winfo_screenwidth()
+        screen_h = self.root.winfo_screenheight()
+        default_w, default_h = (780, 920) if self.mode == "api" else (680, 780)
+        max_w = max(560, int(screen_w * 0.95))
+        max_h = max(560, int(screen_h * 0.92))
+        return min(default_w, max_w), min(default_h, max_h)
+
     def _save_config(self):
         self.config["api_key"] = self.api_key_var.get().strip()
         self.config["mod_folder"] = self.mod_folder_var.get().strip()
@@ -433,6 +619,13 @@ class App:
         self.config["density"] = self.density_var.get()
         self.config["max_output_tokens"] = self.max_output_tokens_var.get().strip()
         self.config["output_dir"] = self.output_dir_var.get().strip()
+        self.config["polish_after_generate"] = bool(
+            self.polish_after_generate_var.get()
+        )
+        self.config["window_size"] = [
+            self.root.winfo_width(),
+            self.root.winfo_height(),
+        ]
         try:
             with open(CONFIG_PATH, "w", encoding="utf-8") as f: json.dump(self.config, f, ensure_ascii=False, indent=4)
             return True
@@ -685,10 +878,8 @@ class App:
             sf = ("TkDefaultFont", 9); bf = ("TkDefaultFont", 11, "bold")
 
         # 窗口大小根据模式调整
-        if self.mode == "api":
-            self.root.geometry("780x920")
-        else:
-            self.root.geometry("680x780")
+        window_w, window_h = self._initial_window_size()
+        self.root.geometry(f"{window_w}x{window_h}")
 
         mf = tk.Frame(self.root, bg="#ffffff", padx=30, pady=20)
         mf.pack(fill=tk.BOTH, expand=True)
@@ -877,6 +1068,28 @@ class App:
                                               selectcolor="#ffffff", command=self._save_config)
         self.use_wiki_check.pack(side=tk.LEFT)
 
+        polish_row = tk.Frame(mf, bg="#ffffff")
+        polish_row.pack(fill=tk.X, pady=(0, 8))
+        self.polish_after_generate_check = tk.Checkbutton(
+            polish_row,
+            text="AI 文案润色",
+            variable=self.polish_after_generate_var,
+            font=("Microsoft YaHei", 9),
+            fg="#666666",
+            bg="#ffffff",
+            activebackground="#ffffff",
+            selectcolor="#ffffff",
+            command=self._save_config,
+        )
+        self.polish_after_generate_check.pack(side=tk.LEFT)
+        tk.Label(
+            polish_row,
+            text="功能鸡肋，token充足时可以试试=D",
+            font=("Microsoft YaHei", 8),
+            fg="#aaaaaa",
+            bg="#ffffff",
+        ).pack(side=tk.LEFT, padx=(6, 0))
+
         ttk.Separator(mf, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(0, 15))
 
         # Progress
@@ -974,7 +1187,14 @@ class App:
         if not self._detected_mods:
             messagebox.showinfo("Info", "请先选择Mod文件夹。")
             return
-        dlg = ModSelectDialog(self.root, self._detected_mods)
+        selected_filenames = {
+            mod.get("filename") for mod in self.selected_mods
+        }
+        dlg = ModSelectDialog(
+            self.root,
+            self._detected_mods,
+            selected_filenames=selected_filenames,
+        )
         self.root.wait_window(dlg)
         if dlg.result is not None and dlg.result:
             self.selected_mods = []
@@ -1071,6 +1291,10 @@ class App:
                 self.api_model_combo.config(state="normal" if not locked else tk.DISABLED)
             if hasattr(self, 'fetch_models_btn'):
                 self.fetch_models_btn.config(state=s)
+            if hasattr(self, 'use_wiki_check'):
+                self.use_wiki_check.config(state=s)
+            if hasattr(self, 'polish_after_generate_check'):
+                self.polish_after_generate_check.config(state=s)
             # URL 字段：解锁时恢复到供应商对应的状态
             if hasattr(self, 'api_url_entry'):
                 if locked:
@@ -1236,10 +1460,12 @@ class App:
             "api_model": self.api_model_var.get().strip(),
             "density": self.density_var.get(),
             "max_output_tokens": int(self.max_output_tokens_var.get().strip()) if self.max_output_tokens_var.get().strip() else None,
+            "polish_after_generate": bool(self.polish_after_generate_var.get()),
         }, daemon=True).start()
 
     def _generate_thread(self, api_key, selected_mods, lang, engine, ollama_model, output_dir, use_wiki=False,
-                         provider=None, api_url=None, api_model=None, density="medium", max_output_tokens=None):
+                         provider=None, api_url=None, api_model=None, density="medium",
+                         max_output_tokens=None, polish_after_generate=False):
         try:
             mf = self.mod_folder_var.get().strip()
             out = generate_quest_book(
@@ -1248,7 +1474,8 @@ class App:
                 lang=lang, engine=engine, ollama_model=ollama_model, output_dir=output_dir,
                 use_wiki=use_wiki, provider=provider, api_url=api_url, api_model=api_model,
                 density=density,
-                max_output_tokens=max_output_tokens
+                max_output_tokens=max_output_tokens,
+                polish_after_generate=polish_after_generate
             )
             self.root.after(0, self._on_done, out)
         except Exception as e: self.root.after(0, self._on_fail, str(e))
@@ -1283,13 +1510,47 @@ class App:
         """异步检测版本更新，保证同一时间只有一次检查。"""
         if self._update_checking:
             return
+        if self._update_checked and not force:
+            return
         self._update_checking = True
+        self._update_request_id += 1
+        request_id = self._update_request_id
+        self._pending_update_result = None
         self.update_label.config(text="检查更新...", fg="#888888")
-        check_for_update(VERSION, self._on_update_result)
+
+        # Tk calls from a worker thread can be dropped before mainloop starts.
+        # Keep the network callback data-only and let the UI thread poll it.
+        def _receive_result(latest_ver, update_info):
+            self._pending_update_result = (request_id, latest_ver, update_info)
+
+        check_for_update(VERSION, _receive_result)
+        deadline = time.monotonic() + 22.0
+        self.root.after(100, lambda: self._poll_update_result(request_id, deadline))
+
+    def _poll_update_result(self, request_id, deadline):
+        if request_id != self._update_request_id:
+            return
+        pending = self._pending_update_result
+        if pending is not None and pending[0] == request_id:
+            self._pending_update_result = None
+            self._on_update_result(pending[1], pending[2])
+            return
+        if not self._update_checking:
+            return
+        if time.monotonic() >= deadline:
+            self._update_checking = False
+            self._update_checked = True
+            self.update_label.config(text="更新检查超时（点击重试）", fg="#c77700")
+            return
+        try:
+            self.root.after(100, lambda: self._poll_update_result(request_id, deadline))
+        except tk.TclError:
+            self._update_checking = False
 
     def _on_update_result(self, latest_ver, update_info=None):
         def _show_dialog():
             self._update_checking = False
+            self._update_checked = True
             update_info = update_info or {}
             if not latest_ver:
                 if update_info.get("error"):
@@ -1336,7 +1597,7 @@ class App:
                       fg="#666666", bg="#e0e0e0", bd=0, padx=12, pady=4,
                       command=top.destroy).pack(side=tk.LEFT, padx=(8, 0))
 
-        self.root.after(0, _show_dialog)
+        _show_dialog()
 
     def _on_update_click(self, event):
         self._start_update_check(force=True)
@@ -1350,6 +1611,15 @@ class App:
     def on_close(self):
         if self.generating:
             if not messagebox.askyesno("Confirm", t("close_confirm")): return
+        try:
+            width = self.root.winfo_width()
+            height = self.root.winfo_height()
+            if width > 1 and height > 1:
+                self.config["window_size"] = [width, height]
+                with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+                    json.dump(self.config, f, ensure_ascii=False, indent=4)
+        except Exception:
+            pass
         self.root.destroy()
 
 def main():

@@ -69,6 +69,9 @@ try:
         normalize_chapter_quests,
     )
     from .quest_writer import write_quest_book
+    from .quest_layout import relayout_quest_book
+    from .quest_polish import QuestPolishService
+    from .human_corpus import HumanQuestCorpus
 except ImportError:
     from ai_clients import (
         API_TIMEOUT,
@@ -118,6 +121,9 @@ except ImportError:
         normalize_chapter_quests,
     )
     from quest_writer import write_quest_book
+    from quest_layout import relayout_quest_book
+    from quest_polish import QuestPolishService
+    from human_corpus import HumanQuestCorpus
 
 OUTPUT_DIR_NAME = "questbook_output"
 
@@ -599,7 +605,8 @@ def classify_mods(mods):
 class QuestBookGenerator:
     def __init__(self, api_key=None, selected_mods=None, mod_folder=None,
                  progress_callback=None, lang="zh", engine="deepseek",
-                 ollama_model=None, provider=None, api_url=None, api_model=None, max_output_tokens=None):
+                 ollama_model=None, provider=None, api_url=None, api_model=None,
+                 max_output_tokens=None, polish_after_generate=False):
         # 根据引擎创建客户端
         self.engine = engine
         self.client = create_chat_client(
@@ -619,6 +626,7 @@ class QuestBookGenerator:
         self._knowledge_base = None
         self.use_wiki = False
         self.max_output_tokens = max_output_tokens
+        self.polish_after_generate = polish_after_generate
 
     def _progress(self, msg, pct=None):
         if self.cb: self.cb(msg, pct)
@@ -1081,6 +1089,28 @@ class QuestBookGenerator:
         # 给所有章节分配分组标签
         self._annotate_chapter_groups(ai_data)
 
+        # Human-style layout: mainline row, staggered branches, info row.
+        try:
+            relayout_quest_book(ai_data)
+            self._progress("鎸変汉宸ュ啓娉曢噸鎺掍换鍔″竷灞€...", 82)
+        except Exception as exc:
+            print(f"[LAYOUT] 甯冨眬閲嶆帓澶辫触锛堜笉褰卞搷鐢熸垚锛?: {exc}")
+
+        # Optional AI polish pass toward human-written wording.
+        if getattr(self, "polish_after_generate", False) and self.client is not None:
+            try:
+                corpus = HumanQuestCorpus()
+                polish = QuestPolishService(
+                    self.client,
+                    corpus=corpus,
+                    progress=self._progress,
+                    max_quests_per_batch=8,
+                )
+                self._progress("AI 姝ｅ湪鎸変汉宸ュ啓娉曢€愮珷鍝佽疮鏂囨...", 85)
+                ai_data, _ = polish.polish_book(ai_data)
+            except Exception as exc:
+                print(f"[POLISH] 鍝佽疮澶辫触锛堜笉褰卞搷鐢熸垚锛?: {exc}")
+
         return self._write_snbt_files(base_dir, ai_data)
 
     def _reorganize_chapters(self, quest_json_text):
@@ -1190,13 +1220,19 @@ def _item_ref_count(container, raw):
         return max(1, int(count))
     except (TypeError, ValueError):
         return 1
-def _uid(): return uuid.uuid4().hex[:16]
+def _uid():
+    """Return a positive 63-bit ID accepted by FTB Quests' signed long parser."""
+    while True:
+        value = uuid.uuid4().int & 0x7FFFFFFFFFFFFFFF
+        if value > 1:
+            return f"{value:016x}"
 
 def generate_quest_book(api_key=None, selected_mods=None, mod_folder=None,
                          progress_callback=None, lang="zh", engine="deepseek",
                          ollama_model=None, output_dir=None, use_wiki=False,
                          provider=None, api_url=None, api_model=None,
-                         density="medium", max_output_tokens=None):
+                         density="medium", max_output_tokens=None,
+                         polish_after_generate=False):
     if progress_callback: progress_callback("分析选中的Mod...",3)
     if not selected_mods: raise Exception("未选中任何Mod。")
     gen = QuestBookGenerator(
@@ -1204,7 +1240,8 @@ def generate_quest_book(api_key=None, selected_mods=None, mod_folder=None,
         progress_callback=progress_callback, lang=lang, engine=engine,
         ollama_model=ollama_model, provider=provider,
         api_url=api_url, api_model=api_model,
-        max_output_tokens=max_output_tokens
+        max_output_tokens=max_output_tokens,
+        polish_after_generate=polish_after_generate
     )
     gen.use_wiki = use_wiki
     gen.density = density

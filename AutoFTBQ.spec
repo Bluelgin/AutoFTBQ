@@ -22,12 +22,20 @@ if missing_tk_files or not os.path.isdir(tkinter_root):
 tk_info = TclTkInfo()
 tcl_datas = [(src, os.path.dirname(dest)) for dest, src, _ in tk_info.data_files]
 tkinter_datas = [(src, os.path.dirname(dest)) for dest, src, _ in Tree(tkinter_root, prefix='tkinter')]
+playstyle_root = os.path.abspath('playstyle_data')
+playstyle_datas = [
+    (os.path.join(playstyle_root, name), 'playstyle_data')
+    for name in sorted(os.listdir(playstyle_root))
+    if name.endswith('.md') and os.path.isfile(os.path.join(playstyle_root, name))
+]
 
 a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[(path, '.') for path in tk_binaries],
-    datas=[('playstyle_data', 'playstyle_data')] + tcl_datas + tkinter_datas,
+    datas=[
+        ('human_style_corpus.json.gz', '.'),
+    ] + playstyle_datas + tcl_datas + tkinter_datas,
     hiddenimports=['_tkinter'],
     hookspath=[],
     hooksconfig={},

@@ -166,6 +166,32 @@ class KubeJSScannerTests(unittest.TestCase):
         self.assertLess(hints.index("first:machine"), hints.index("Second (second)"))
         self.assertLess(hints.index("Second (second)"), hints.index("second:altar"))
 
+    def test_detect_library_mods_keeps_playstyle_mods_and_filters_libs(self):
+        mods = [
+            {"mod_id": "farmersdelight", "mod_name": "Farmer's Delight", "category": "food"},
+            {"mod_id": "touhoulittlemaid", "mod_name": "Maid", "category": "unknown"},
+            {"mod_id": "architectury", "mod_name": "Architectury", "category": "unknown"},
+            {"mod_id": "oculus", "mod_name": "Oculus", "category": "unknown"},
+            {"mod_id": "randomplaymod", "mod_name": "Random", "category": "unknown"},
+            {"mod_id": "c3me", "mod_name": "C3ME", "category": "unknown"},
+        ]
+        all_items = {
+            "farmersdelight": {"farmersdelight:knife": "Knife"},
+            "touhoulittlemaid": {},
+            "architectury": {},
+            "oculus": {},
+            "randomplaymod": {},
+            "c3me": {},
+        }
+        mod_scanner.detect_library_mods(mods, all_items)
+        by_id = {m["mod_id"]: m for m in mods}
+        self.assertFalse(by_id["farmersdelight"]["is_library"])
+        self.assertFalse(by_id["touhoulittlemaid"]["is_library"])
+        self.assertTrue(by_id["architectury"]["is_library"])
+        self.assertTrue(by_id["oculus"]["is_library"])
+        self.assertTrue(by_id["randomplaymod"]["is_library"])
+        self.assertTrue(by_id["c3me"]["is_library"])
+
 
 if __name__ == "__main__":
     unittest.main()

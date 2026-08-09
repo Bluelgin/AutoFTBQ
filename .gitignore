@@ -33,4 +33,5 @@ Thumbs.db
 # Cache
 _modrinth_cache/
 _wiki_cache/
+polish_debug/
 reasonix.toml

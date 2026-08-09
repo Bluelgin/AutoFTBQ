@@ -11,7 +11,9 @@ try:
 except ModuleNotFoundError:
     sys.modules["requests"] = types.ModuleType("requests")
 
-from ai_module import QuestBookGenerator
+from ai_module import QuestBookGenerator, _uid
+from quest_layout import relayout_chapter
+from quest_planner import normalize_chapter_quests
 
 
 def _quest(quest_id=None, dependency=None, count=1):
@@ -62,6 +64,13 @@ class QuestWriterTests(unittest.TestCase):
         self.generator._write_snbt_files(self.output, data)
 
         self.assertIn("count: 64", self._chapter_texts()[0])
+
+    def test_generated_ids_fit_ftb_quests_signed_long_range(self):
+        values = [_uid() for _ in range(1000)]
+
+        self.assertEqual(len(values), len(set(values)))
+        self.assertTrue(all(len(value) == 16 for value in values))
+        self.assertTrue(all(1 < int(value, 16) <= 0x7FFFFFFFFFFFFFFF for value in values))
 
     def test_scopes_duplicate_source_ids_to_each_chapter(self):
         data = {
@@ -211,6 +220,29 @@ class QuestWriterTests(unittest.TestCase):
                 self.generator._write_snbt_files(self.output, second)
 
         self.assertEqual(self._output_snapshot(), before)
+
+    def test_layout_metadata_is_not_written_to_snbt(self):
+        source = [
+            {
+                "title": f"Quest {index}",
+                "tasks": [{"type": "item", "target": "minecraft:stone"}],
+                "rewards": [],
+            }
+            for index in range(8)
+        ]
+        chapter = {
+            "id": "theme_tech",
+            "title": "Technology",
+            "quests": normalize_chapter_quests("theme_tech", source),
+        }
+        relayout_chapter(chapter)
+
+        self.generator._write_snbt_files(self.output, {"chapters": [chapter]})
+
+        text = self._chapter_texts()[0]
+        self.assertNotIn("_layout_", text)
+        self.assertIn("dependencies:", text)
+        self.assertIn("shape:", text)
 
 
 if __name__ == "__main__":

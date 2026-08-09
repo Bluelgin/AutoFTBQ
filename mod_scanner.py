@@ -865,7 +865,7 @@ def detect_library_mods(mods, all_items):
             m["is_library"] = True
             continue
         cat = m.get("category", "unknown")
-        if cat in ("tech", "magic", "world", "mob", "vanilla"):
+        if cat in ("tech", "magic", "world", "mob", "vanilla", "food"):
             m["is_library"] = False    # 核心 Mod → 坚决不是库
             continue
         # 精确匹配已知库列表
@@ -880,8 +880,36 @@ def detect_library_mods(mods, all_items):
         else:
             items = all_items.get(mod_id, {})
             item_count = len(items)
-            m.setdefault("is_library", item_count <= 2)  # 物品 ≤ 2 → 几乎肯定是库
+            if mod_id.lower() in _PLAYSTYLE_MODS:
+                # 人工资料收录的玩法 Mod → 即使扫描不到物品也保留
+                m.setdefault("is_library", False)
+            else:
+                m.setdefault("is_library", item_count <= 2)  # 物品 ≤ 2 → 几乎肯定是库
     return mods
+
+
+def _load_playstyle_mods():
+    """Playable mods backed by substantive hand-written gameplay notes."""
+    base = os.path.dirname(os.path.abspath(__file__))
+    playstyle_dir = os.path.join(base, "playstyle_data")
+    mod_ids = set()
+    if os.path.isdir(playstyle_dir):
+        for name in os.listdir(playstyle_dir):
+            if name.endswith(".md"):
+                path = os.path.join(playstyle_dir, name)
+                try:
+                    with open(path, "r", encoding="utf-8") as handle:
+                        content = handle.read().strip()
+                except OSError:
+                    continue
+                # Tiny notes are commonly compatibility/performance metadata,
+                # not evidence that the mod has a player-facing progression.
+                if len(content) >= 80:
+                    mod_ids.add(name[:-3].lstrip("_").lower())
+    return mod_ids
+
+
+_PLAYSTYLE_MODS = _load_playstyle_mods()
 
 # ════════════════════════════════════════════════════════
 # 已知依赖库 / 前置 Mod 列表（不需要生成任务）
