@@ -7,7 +7,7 @@
 ![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)
 ![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey.svg)
 ![License](https://img.shields.io/badge/License-GPL--3.0-green.svg)
-![Version](https://img.shields.io/badge/Version-1.3.6-orange.svg)
+![Version](https://img.shields.io/badge/Version-1.3.7-orange.svg)
 [![Downloads](https://img.shields.io/github/downloads/Bluelgin/AutoFTBQ/total?color=blue&label=Downloads)](https://github.com/Bluelgin/AutoFTBQ/releases)
 
 ## 先说它能做什么
@@ -24,12 +24,12 @@
 
 > 目前稳定版支持 DeepSeek、Ollama，以及手动配置的 OpenAI 兼容 API。第三方服务没有统一的模型列表和错误格式，所以自定义 API 需要用户自己填写并确认参数。
 
-## v1.3.6 更新
+## v1.3.7 更新
 
-- 加入主题化章节与人工任务书布局：常规章节使用工整横向主线，魔法与伙伴保留六向雪花，Boss 使用树状分支。
-- 修复 FTB Quests 任务 ID 超出有符号 long 范围后被游戏重置、依赖连线丢失的问题。
-- 加入 Mod 搜索和可选 AI 文案润色，并改进任务覆盖记录与章节级玩法资料检索。
-- 完善 KubeJS、SNBT、第三方 API、更新检查和 Windows EXE 打包稳定性。
+- 主界面加入纵向滚动，鼠标滚轮、触控板和右侧滚动条均可使用。
+- 状态、进度条与生成按钮固定在窗口底部，小屏幕或高 DPI 缩放下也不会消失。
+- API 与导入模式同步适配，JSON 编辑框仍保留独立滚动。
+- 最小窗口高度降低到 480，改善小尺寸笔记本上的使用体验。
 
 ## 人工风格布局与文案润色
 

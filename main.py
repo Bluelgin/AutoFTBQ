@@ -10,7 +10,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
-APP_NAME = "AutoFTBQ"; VERSION = "1.3.6"; AUTHOR = "Taki"
+APP_NAME = "AutoFTBQ"; VERSION = "1.3.7"; AUTHOR = "Taki"
 CONFIG_PATH = os.path.join(SCRIPT_DIR, "config.json")
 
 AI_AVAILABLE = False; AI_IMPORT_ERROR = ""
@@ -507,7 +507,7 @@ class App:
         for widget in self.root.winfo_children():
             widget.destroy()
         self.root.resizable(True, True)
-        self.root.minsize(560, 560)
+        self.root.minsize(560, 480)
         self.root.configure(bg="#ffffff")
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
@@ -596,7 +596,7 @@ class App:
         if isinstance(saved, (list, tuple)) and len(saved) == 2:
             try:
                 saved_w, saved_h = int(saved[0]), int(saved[1])
-                if saved_w >= 560 and saved_h >= 560:
+                if saved_w >= 560 and saved_h >= 480:
                     return saved_w, saved_h
             except (TypeError, ValueError):
                 pass
@@ -604,7 +604,7 @@ class App:
         screen_h = self.root.winfo_screenheight()
         default_w, default_h = (780, 920) if self.mode == "api" else (680, 780)
         max_w = max(560, int(screen_w * 0.95))
-        max_h = max(560, int(screen_h * 0.92))
+        max_h = max(480, int(screen_h * 0.92))
         return min(default_w, max_w), min(default_h, max_h)
 
     def _save_config(self):
@@ -881,8 +881,40 @@ class App:
         window_w, window_h = self._initial_window_size()
         self.root.geometry(f"{window_w}x{window_h}")
 
-        mf = tk.Frame(self.root, bg="#ffffff", padx=30, pady=20)
-        mf.pack(fill=tk.BOTH, expand=True)
+        shell = tk.Frame(self.root, bg="#ffffff")
+        shell.pack(fill=tk.BOTH, expand=True)
+
+        fixed_host = tk.Frame(shell, bg="#ffffff")
+        fixed_host.pack(side=tk.BOTTOM, fill=tk.X)
+
+        scroll_host = tk.Frame(shell, bg="#ffffff")
+        scroll_host.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self._main_canvas = tk.Canvas(
+            scroll_host,
+            bg="#ffffff",
+            highlightthickness=0,
+            bd=0,
+            yscrollincrement=24,
+        )
+        self._main_scrollbar = ttk.Scrollbar(
+            scroll_host,
+            orient=tk.VERTICAL,
+            command=self._main_canvas.yview,
+        )
+        self._main_canvas.configure(yscrollcommand=self._main_scrollbar.set)
+        self._main_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self._main_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        mf = tk.Frame(self._main_canvas, bg="#ffffff", padx=30, pady=20)
+        self._main_content = mf
+        self._main_canvas_window = self._main_canvas.create_window(
+            (0, 0),
+            window=mf,
+            anchor=tk.NW,
+        )
+        mf.bind("<Configure>", self._update_main_scrollregion, add="+")
+        self._main_canvas.bind("<Configure>", self._resize_main_content, add="+")
+        self.root.bind_all("<MouseWheel>", self._on_main_mousewheel, add="+")
 
         # Title
         top = tk.Frame(mf, bg="#ffffff"); top.pack(fill=tk.X)
@@ -930,6 +962,8 @@ class App:
         else:
             self._build_import_specific(mf, df)
 
+        self._build_fixed_action_area(fixed_host, sf, bf)
+
         self.footer_label = tk.Label(mf, font=("Microsoft YaHei", 8), fg="#cccccc", bg="#ffffff")
         self.footer_label.pack(pady=(15, 0))
 
@@ -937,6 +971,150 @@ class App:
         self.update_label = tk.Label(mf, font=("Microsoft YaHei", 8), fg="#888888", bg="#ffffff", cursor="hand2")
         self.update_label.pack(before=self.footer_label, pady=(0, 2))
         self.update_label.bind("<Button-1>", self._on_update_click)
+
+    def _update_main_scrollregion(self, event=None):
+        if hasattr(self, "_main_canvas"):
+            self._main_canvas.configure(scrollregion=self._main_canvas.bbox("all"))
+
+    def _resize_main_content(self, event):
+        self._main_canvas.itemconfigure(self._main_canvas_window, width=event.width)
+        self._update_main_scrollregion()
+
+    def _on_main_mousewheel(self, event):
+        """Scroll the main form without stealing wheel input from text/list widgets."""
+        widget = self.root.winfo_containing(event.x_root, event.y_root)
+        if widget is None or isinstance(widget, (tk.Text, tk.Listbox)):
+            return None
+
+        current = widget
+        inside_main_content = False
+        while current is not None:
+            if current in (self._main_content, self._main_canvas):
+                inside_main_content = True
+                break
+            parent_name = current.winfo_parent()
+            if not parent_name:
+                current = None
+                continue
+            try:
+                current = current._nametowidget(parent_name)
+            except (KeyError, tk.TclError):
+                current = None
+        if not inside_main_content:
+            return None
+
+        bounds = self._main_canvas.bbox("all")
+        if not bounds or bounds[3] <= self._main_canvas.winfo_height():
+            return None
+        steps = max(1, min(3, abs(int(event.delta)) // 120 or 1))
+        self._main_canvas.yview_scroll(-steps if event.delta > 0 else steps, "units")
+        return "break"
+
+    def _build_fixed_action_area(self, parent, sf, bf):
+        """Keep generation status and primary actions visible on small screens."""
+        ttk.Separator(parent, orient=tk.HORIZONTAL).pack(fill=tk.X)
+        panel = tk.Frame(parent, bg="#ffffff", padx=30, pady=10)
+        panel.pack(fill=tk.X)
+
+        self.info_frame = tk.Frame(panel, bg="#f8f8f8", padx=12, pady=7)
+        self.info_frame.pack(fill=tk.X, pady=(0, 7))
+        self.info_label = tk.Label(
+            self.info_frame,
+            font=sf,
+            fg="#888888",
+            bg="#f8f8f8",
+            wraplength=600,
+            justify=tk.LEFT,
+        )
+        self.info_label.pack(anchor=tk.W)
+        self.info_frame.bind(
+            "<Configure>",
+            lambda event: self.info_label.configure(wraplength=max(240, event.width - 24)),
+            add="+",
+        )
+
+        progress_row = tk.Frame(panel, bg="#ffffff")
+        progress_row.pack(fill=tk.X, pady=(0, 8))
+        self.progress_label = tk.Label(
+            progress_row,
+            text="",
+            font=sf,
+            fg="#888888",
+            bg="#ffffff",
+            anchor=tk.W,
+        )
+        self.progress_label.pack(anchor=tk.W)
+        self.progress_bar = ttk.Progressbar(progress_row, mode="determinate", value=0)
+        self.progress_bar.pack(fill=tk.X, pady=(3, 0))
+
+        btnf = tk.Frame(panel, bg="#ffffff")
+        btnf.pack(fill=tk.X)
+        if self.mode == "api":
+            self.save_btn = tk.Button(
+                btnf,
+                font=bf,
+                command=self._on_save_config,
+                bg="#4a90d9",
+                fg="#ffffff",
+                bd=0,
+                relief=tk.FLAT,
+                cursor="hand2",
+                activebackground="#357abd",
+                activeforeground="#ffffff",
+                padx=20,
+                pady=8,
+            )
+            self.save_btn.pack(side=tk.LEFT, padx=(0, 10))
+            self.generate_btn = tk.Button(
+                btnf,
+                font=bf,
+                command=self._on_generate,
+                bg="#cccccc",
+                fg="#ffffff",
+                bd=0,
+                relief=tk.FLAT,
+                cursor="hand2",
+                activebackground="#cccccc",
+                activeforeground="#ffffff",
+                padx=20,
+                pady=8,
+                state=tk.DISABLED,
+            )
+            self.generate_btn.pack(side=tk.RIGHT)
+        else:
+            self.save_prompt_api_btn = tk.Button(
+                btnf,
+                text="📤 保存提示词文件",
+                font=("Microsoft YaHei", 10),
+                command=self._on_save_prompt,
+                bg="#2196f3",
+                fg="#ffffff",
+                bd=0,
+                relief=tk.FLAT,
+                cursor="hand2",
+                activebackground="#1976d2",
+                activeforeground="#ffffff",
+                padx=14,
+                pady=8,
+                state=tk.DISABLED,
+            )
+            self.save_prompt_api_btn.pack(side=tk.LEFT)
+            self.import_btn = tk.Button(
+                btnf,
+                text="📄 粘贴并生成 SNBT",
+                font=("Microsoft YaHei", 11, "bold"),
+                command=self._on_import_json,
+                bg="#4caf50",
+                fg="#ffffff",
+                bd=0,
+                relief=tk.FLAT,
+                cursor="hand2",
+                activebackground="#388e3c",
+                activeforeground="#ffffff",
+                padx=20,
+                pady=8,
+            )
+            self.import_btn.pack(side=tk.RIGHT)
 
     def _build_api_specific(self, mf, df, sf, bf):
         """构建 API 模式专属 UI"""
@@ -1090,36 +1268,19 @@ class App:
             bg="#ffffff",
         ).pack(side=tk.LEFT, padx=(6, 0))
 
-        ttk.Separator(mf, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(0, 15))
-
-        # Progress
-        pf = tk.Frame(mf, bg="#ffffff"); pf.pack(fill=tk.X, pady=(0, 10))
-        self.progress_label = tk.Label(pf, text="", font=sf, fg="#888888", bg="#ffffff", anchor=tk.W)
-        self.progress_label.pack(anchor=tk.W)
-        self.progress_bar = ttk.Progressbar(pf, mode="determinate", length=620, value=0)
-        self.progress_bar.pack(fill=tk.X, pady=(4, 0))
-
-        # Info
-        self.info_frame = tk.Frame(mf, bg="#f8f8f8", padx=15, pady=12)
-        self.info_frame.pack(fill=tk.X, pady=(0, 15))
-        self.info_label = tk.Label(self.info_frame, font=sf, fg="#888888", bg="#f8f8f8", wraplength=600, justify=tk.LEFT)
-        self.info_label.pack(anchor=tk.W)
-
-        # Buttons
-        btnf = tk.Frame(mf, bg="#ffffff"); btnf.pack(fill=tk.X)
-        self.save_btn = tk.Button(btnf, font=bf, command=self._on_save_config, bg="#4a90d9", fg="#ffffff", bd=0, relief=tk.FLAT, cursor="hand2", activebackground="#357abd", activeforeground="#ffffff", padx=20, pady=8)
-        self.save_btn.pack(side=tk.LEFT, padx=(0, 10))
-        self.generate_btn = tk.Button(btnf, font=bf, command=self._on_generate, bg="#cccccc", fg="#ffffff", bd=0, relief=tk.FLAT, cursor="hand2", activebackground="#cccccc", activeforeground="#ffffff", padx=20, pady=8, state=tk.DISABLED)
-        self.generate_btn.pack(side=tk.RIGHT)
-
     def _build_import_specific(self, mf, df):
         """构建导入模式专属 UI"""
-        # Info
-        self.info_frame = tk.Frame(mf, bg="#f0faf0", padx=15, pady=12)
-        self.info_frame.pack(fill=tk.X, pady=(0, 12))
-        self.info_label = tk.Label(self.info_frame, font=("Microsoft YaHei", 9), fg="#4caf50", bg="#f0faf0", wraplength=580, justify=tk.LEFT,
-                                    text="💡 提示：先选 Mod → 点「保存提示词」→ 上传文件到网页AI → 粘贴返回的JSON → 点「生成SNBT」")
-        self.info_label.pack(anchor=tk.W)
+        tip_frame = tk.Frame(mf, bg="#f0faf0", padx=15, pady=12)
+        tip_frame.pack(fill=tk.X, pady=(0, 12))
+        tk.Label(
+            tip_frame,
+            font=("Microsoft YaHei", 9),
+            fg="#4caf50",
+            bg="#f0faf0",
+            wraplength=580,
+            justify=tk.LEFT,
+            text="💡 提示：先选 Mod → 点「保存提示词」→ 上传文件到网页AI → 粘贴返回的JSON → 点「生成SNBT」",
+        ).pack(anchor=tk.W)
 
         # JSON 输入区（增大）
         json_label = tk.Label(mf, text="粘贴 AI 返回的 JSON：",
@@ -1129,28 +1290,6 @@ class App:
                                   bg="#fafafa", fg="#333333", bd=1, relief=tk.SOLID,
                                   wrap=tk.WORD)
         self.json_text.pack(fill=tk.X)
-
-        # Buttons
-        btnf = tk.Frame(mf, bg="#ffffff")
-        btnf.pack(fill=tk.X, pady=(10, 0))
-        self.save_prompt_api_btn = tk.Button(btnf, text="📤 保存提示词文件", font=("Microsoft YaHei", 10),
-                                              command=self._on_save_prompt, bg="#2196f3", fg="#ffffff",
-                                              bd=0, relief=tk.FLAT, cursor="hand2",
-                                              activebackground="#1976d2", activeforeground="#ffffff",
-                                              padx=14, pady=8, state=tk.DISABLED)
-        self.save_prompt_api_btn.pack(side=tk.LEFT)
-        self.import_btn = tk.Button(btnf, text="📄 粘贴并生成 SNBT", font=("Microsoft YaHei", 11, "bold"),
-                                     command=self._on_import_json, bg="#4caf50", fg="#ffffff",
-                                     bd=0, relief=tk.FLAT, cursor="hand2",
-                                     activebackground="#388e3c", activeforeground="#ffffff",
-                                     padx=20, pady=8)
-        self.import_btn.pack(side=tk.RIGHT)
-
-        # Progress (简化)
-        self.progress_label = tk.Label(mf, text="", font=("Microsoft YaHei", 9), fg="#888888", bg="#ffffff", anchor=tk.W)
-        self.progress_label.pack(anchor=tk.W, pady=(10, 0))
-        self.progress_bar = ttk.Progressbar(mf, mode="determinate", length=620, value=0)
-        self.progress_bar.pack(fill=tk.X, pady=(6, 0))
 
     def _browse_output_dir(self):
         folder = filedialog.askdirectory(title="选择输出目录")
@@ -1249,7 +1388,7 @@ class App:
             self.info_label.config(text=text)
             c = {"success":("#4caf50","#f0faf0"),"warning":("#ff9800","#fffaf0"),"error":("#f44336","#fff5f5")}
             fg,bg = c.get(level,("#888888","#f8f8f8"))
-            self.info_label.config(fg=fg); self.info_frame.config(bg=bg)
+            self.info_label.config(fg=fg, bg=bg); self.info_frame.config(bg=bg)
 
     def _on_progress(self, msg, pct):
         if not self.generating: return

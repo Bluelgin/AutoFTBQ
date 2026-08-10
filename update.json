@@ -1,7 +1,7 @@
 {
-    "version": "1.3.6",
-    "download_url": "https://github.com/Bluelgin/AutoFTBQ/releases/download/v1.3.6/AutoFTBQ.exe",
-    "github_url": "https://github.com/Bluelgin/AutoFTBQ/releases/download/v1.3.6/AutoFTBQ.exe",
+    "version": "1.3.7",
+    "download_url": "https://github.com/Bluelgin/AutoFTBQ/releases/download/v1.3.7/AutoFTBQ.exe",
+    "github_url": "https://github.com/Bluelgin/AutoFTBQ/releases/download/v1.3.7/AutoFTBQ.exe",
     "quark_url": "https://pan.quark.cn/s/25387b63a76c",
     "changelog": "优化章节级知识检索与任务覆盖；减少跨批次重复任务；更新常用模型预设并提升生成稳定性"
 }
