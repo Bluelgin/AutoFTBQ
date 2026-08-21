@@ -57,6 +57,7 @@ class StagedGenerationHooks:
     max_tokens: Callable[[], int]
     build_context: Callable[[dict, list[dict], str], str] | None = None
     filter_batch: Callable[[dict, list[dict], list[dict]], list[dict]] | None = None
+    chat_batch: Callable[[list[dict], float, int], tuple[str, bool]] | None = None
 
 
 class StagedGenerationService:
@@ -77,20 +78,23 @@ class StagedGenerationService:
         self.progress(f"已规划 {len(plan)} 个章节，共 {total_target} 个任务", 14)
         completed = 0
         chapters = []
+        global_quests = []
 
         for chapter in plan:
             catalog = self.hooks.build_catalog(chapter)
             quests = []
-            while len(quests) < chapter["target"]:
+            exhausted = False
+            while len(quests) < chapter["target"] and not exhausted:
                 requested = min(chapter["batch_size"], chapter["target"] - len(quests))
                 remaining = requested
                 attempts = 0
                 while remaining > 0 and attempts < 3:
-                    existing_titles = [quest.get("title", "") for quest in quests]
+                    known_quests = global_quests + quests
+                    existing_titles = [quest.get("title", "") for quest in known_quests]
                     batch_catalog = catalog
                     batch_wiki_text = wiki_text
                     if self.hooks.build_context is not None:
-                        batch_catalog = self.hooks.build_context(chapter, quests, catalog)
+                        batch_catalog = self.hooks.build_context(chapter, known_quests, catalog)
                         batch_wiki_text = ""
                     prompt = self.hooks.build_prompt(
                         chapter,
@@ -101,25 +105,36 @@ class StagedGenerationService:
                     )
                     batch_tokens = max(3072, min(12288, remaining * 1100))
                     max_tokens = min(batch_tokens, self.hooks.max_tokens())
-                    content, truncated = self.client.chat(
-                        [
-                            {"role": "system", "content": STAGED_SYSTEM_PROMPT},
-                            {"role": "user", "content": prompt},
-                        ],
-                        temperature=0.45,
-                        max_tokens=max_tokens,
-                    )
+                    messages = [
+                        {"role": "system", "content": STAGED_SYSTEM_PROMPT},
+                        {"role": "user", "content": prompt},
+                    ]
+                    if self.hooks.chat_batch is not None:
+                        content, truncated = self.hooks.chat_batch(messages, 0.45, max_tokens)
+                    else:
+                        content, truncated = self.client.chat(
+                            messages,
+                            temperature=0.45,
+                            max_tokens=max_tokens,
+                        )
                     parsed = [] if truncated else self.hooks.parse_batch(content)
                     parsed = self.hooks.deduplicate_batch(parsed, existing_titles)
                     if self.hooks.filter_batch is not None:
-                        parsed = self.hooks.filter_batch(chapter, parsed, quests)
+                        parsed = self.hooks.filter_batch(chapter, parsed, known_quests)
                     accepted = parsed[:remaining]
                     quests.extend(accepted)
                     remaining -= len(accepted)
                     attempts += 1
                 if remaining > 0:
-                    quests.extend(self.hooks.build_fallback(chapter, remaining, quests))
-                completed += requested
+                    fallback = self.hooks.build_fallback(
+                        chapter,
+                        remaining,
+                        global_quests + quests,
+                    )
+                    quests.extend(fallback)
+                    if len(fallback) < remaining:
+                        exhausted = True
+                completed += requested - remaining + (len(fallback) if remaining > 0 else 0)
                 percent = 15 + int(60 * completed / max(1, total_target))
                 self.progress(
                     f"分阶段生成：{chapter['title']} {len(quests)}/{chapter['target']}",
@@ -135,4 +150,5 @@ class StagedGenerationService:
                 "title": chapter["title"],
                 "quests": normalized,
             })
+            global_quests.extend(normalized)
         return json.dumps({"title": "整合包任务指南", "chapters": chapters}, ensure_ascii=False)

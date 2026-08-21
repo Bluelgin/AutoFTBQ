@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import sys
 import tempfile
 import types
@@ -11,9 +12,10 @@ try:
 except ModuleNotFoundError:
     sys.modules["requests"] = types.ModuleType("requests")
 
-from ai_module import QuestBookGenerator, _uid
+from ai_module import QuestBookGenerator, _uid, to_snbt
 from quest_layout import relayout_chapter
 from quest_planner import normalize_chapter_quests
+from quest_writer import MARKER_CHAPTER_ID
 
 
 def _quest(quest_id=None, dependency=None, count=1):
@@ -43,7 +45,7 @@ class QuestWriterTests(unittest.TestCase):
         chapter_dir = os.path.join(self.output, "chapters")
         texts = []
         for filename in os.listdir(chapter_dir):
-            if filename != "ZZZZZZZZZZZZZZZZ.snbt" and filename.endswith(".snbt"):
+            if filename != f"{MARKER_CHAPTER_ID}.snbt" and filename.endswith(".snbt"):
                 with open(os.path.join(chapter_dir, filename), "r", encoding="utf-8") as f:
                     texts.append(f.read())
         return texts
@@ -64,6 +66,12 @@ class QuestWriterTests(unittest.TestCase):
         self.generator._write_snbt_files(self.output, data)
 
         self.assertIn("count: 64", self._chapter_texts()[0])
+
+    def test_snbt_strings_fold_embedded_control_whitespace(self):
+        text = to_snbt({"description": "first line\nsecond\tline\rthird"})
+
+        self.assertIn('description: "first line second line third"', text)
+        self.assertNotIn("first line\nsecond", text)
 
     def test_generated_ids_fit_ftb_quests_signed_long_range(self):
         values = [_uid() for _ in range(1000)]
@@ -111,7 +119,33 @@ class QuestWriterTests(unittest.TestCase):
         remaining = set(os.listdir(os.path.join(self.output, "chapters")))
 
         self.assertTrue(os.path.isfile(user_file))
-        self.assertFalse((first_files - {"ZZZZZZZZZZZZZZZZ.snbt"}) & remaining)
+        self.assertFalse((first_files - {f"{MARKER_CHAPTER_ID}.snbt"}) & remaining)
+
+    def test_chapter_group_references_use_existing_hex_ids(self):
+        data = {
+            "chapters": [
+                {"title": "Tech A", "_group": "tech", "quests": [_quest("q1")]},
+                {"title": "Tech B", "_group": "tech", "quests": [_quest("q2")]},
+                {"title": "World", "_group": "world", "quests": [_quest("q3")]},
+            ],
+        }
+
+        self.generator._write_snbt_files(self.output, data)
+
+        with open(os.path.join(self.output, "chapter_groups.snbt"), encoding="utf-8") as handle:
+            group_text = handle.read()
+        group_ids = set(re.findall(r'\bid: "([0-9A-F]{16})"', group_text))
+        chapter_groups = []
+        for filename in os.listdir(os.path.join(self.output, "chapters")):
+            with open(os.path.join(self.output, "chapters", filename), encoding="utf-8") as handle:
+                match = re.search(r'^\s*group: "([0-9A-F]{16})"', handle.read(), re.MULTILINE)
+            self.assertIsNotNone(match, filename)
+            chapter_groups.append(match.group(1))
+
+        self.assertTrue(set(chapter_groups).issubset(group_ids))
+        self.assertEqual(len(chapter_groups), 4)
+        self.assertEqual(len(set(chapter_groups)), 3)
+        self.assertNotIn('id: "tech"', group_text)
 
     def test_available_namespaces_include_scanned_kubejs_namespaces(self):
         self.generator._all_items = {"kubejs": {}, "pack": {}}
@@ -243,6 +277,46 @@ class QuestWriterTests(unittest.TestCase):
         self.assertNotIn("_layout_", text)
         self.assertIn("dependencies:", text)
         self.assertIn("shape:", text)
+
+    def test_save_pipeline_adds_description_and_quality_report(self):
+        output = os.path.join(self.output, "published")
+        payload = json.dumps({
+            "title": "Pack",
+            "chapters": [{
+                "title": "Start",
+                "quests": [{
+                    "id": "q1",
+                    "title": "Stone",
+                    "subtitle": "Collect stone",
+                    "tasks": [{"type": "item", "target": "minecraft:stone"}],
+                    "rewards": [],
+                }],
+            }],
+        })
+
+        self.generator._save_snbt_files(
+            payload,
+            {"minecraft": {"minecraft:stone": "Stone"}},
+            output,
+        )
+
+        self.assertTrue(os.path.isfile(os.path.join(output, "quality_report.txt")))
+        with open(os.path.join(output, "quality_report.txt"), encoding="utf-8") as handle:
+            self.assertIn("状态: 可发布", handle.read())
+        chapter_files = [
+            name for name in os.listdir(os.path.join(output, "chapters"))
+            if name.endswith(".snbt") and name != f"{MARKER_CHAPTER_ID}.snbt"
+        ]
+        with open(os.path.join(output, "chapters", chapter_files[0]), encoding="utf-8") as handle:
+            self.assertIn("description:", handle.read())
+
+    def test_save_pipeline_rejects_empty_book(self):
+        output = os.path.join(self.output, "empty")
+
+        with self.assertRaisesRegex(Exception, "未通过发布检查"):
+            self.generator._save_snbt_files('{"title":"Empty","chapters":[]}', {}, output)
+
+        self.assertFalse(os.path.isfile(os.path.join(output, "data.snbt")))
 
 
 if __name__ == "__main__":

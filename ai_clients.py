@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from typing import Protocol
 
@@ -70,13 +71,14 @@ class GenericOpenAIClient:
         self.timeout = timeout
         self.omit_temperature = omit_temperature
         self.request_overrides = dict(request_overrides or {})
+        self._tool_support = None
         self.headers = {
             "Authorization": f"Bearer {str(api_key).strip()}",
             "Content-Type": "application/json",
             "User-Agent": "AutoFTBQ",
         }
 
-    def chat(self, messages, temperature=0.7, max_tokens=8192):
+    def _payload(self, messages, temperature, max_tokens):
         payload = {
             "model": self.model,
             "messages": messages,
@@ -86,6 +88,9 @@ class GenericOpenAIClient:
         if not self.omit_temperature:
             payload["temperature"] = temperature
         payload.update(self.request_overrides)
+        return payload
+
+    def _post(self, payload):
         for attempt in range(MAX_RETRIES):
             try:
                 response = requests.post(
@@ -95,7 +100,10 @@ class GenericOpenAIClient:
                     timeout=self.timeout,
                 )
                 if response.status_code == 200:
-                    return _response_content(response.json())
+                    body = response.json()
+                    if not isinstance(body, dict):
+                        raise RuntimeError("API 返回值不是 JSON 对象")
+                    return body
                 if response.status_code == 401:
                     raise RuntimeError("API Key 无效，请检查后重试")
                 if response.status_code == 402:
@@ -120,6 +128,80 @@ class GenericOpenAIClient:
             except requests.RequestException as exc:
                 raise RuntimeError(f"API 网络请求失败：{exc}") from exc
         raise RuntimeError("API 请求失败（重试次数耗尽）")
+
+    def chat(self, messages, temperature=0.7, max_tokens=8192):
+        return _response_content(self._post(self._payload(messages, temperature, max_tokens)))
+
+    def chat_with_tools(
+        self,
+        messages,
+        tools,
+        tool_handler,
+        temperature=0.7,
+        max_tokens=8192,
+        max_rounds=3,
+    ):
+        """Run a bounded tool loop, falling back once when a provider rejects tools."""
+        if self._tool_support is False or not tools:
+            return self.chat(messages, temperature, max_tokens)
+        conversation = [dict(message) for message in messages]
+        for round_index in range(max(1, min(int(max_rounds), 6))):
+            payload = self._payload(conversation, temperature, max_tokens)
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
+            try:
+                body = self._post(payload)
+            except RuntimeError as exc:
+                unsupported = any(
+                    marker in str(exc)
+                    for marker in ("HTTP 400", "HTTP 403", "HTTP 404", "HTTP 422")
+                )
+                if self._tool_support is None and unsupported:
+                    self._tool_support = False
+                    return self.chat(messages, temperature, max_tokens)
+                raise
+            choices = body.get("choices")
+            if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+                raise ValueError("API 返回值缺少 choices[0]")
+            message = choices[0].get("message")
+            if not isinstance(message, dict):
+                raise ValueError("API 返回值缺少 choices[0].message")
+            tool_calls = message.get("tool_calls")
+            if not isinstance(tool_calls, list) or not tool_calls:
+                self._tool_support = True
+                return _response_content(body)
+            self._tool_support = True
+            bounded_calls = tool_calls[:6]
+            bounded_message = dict(message)
+            bounded_message.setdefault("role", "assistant")
+            bounded_message["tool_calls"] = bounded_calls
+            conversation.append(bounded_message)
+            for call in bounded_calls:
+                function = call.get("function", {}) if isinstance(call, dict) else {}
+                name = str(function.get("name", ""))
+                try:
+                    arguments = json.loads(function.get("arguments", "{}") or "{}")
+                except (TypeError, ValueError):
+                    arguments = {}
+                try:
+                    result = tool_handler(name, arguments)
+                except Exception as exc:
+                    result = json.dumps({"error": str(exc)}, ensure_ascii=False)
+                conversation.append({
+                    "role": "tool",
+                    "tool_call_id": str(call.get("id", f"tool_{round_index}")),
+                    "name": name,
+                    "content": str(result),
+                })
+        conversation.append({
+            "role": "user",
+            "content": (
+                "Stop calling tools. Using the tool results already provided, "
+                "return the final answer in the exact format requested by the original prompt."
+            ),
+        })
+        payload = self._payload(conversation, temperature, max_tokens)
+        return _response_content(self._post(payload))
 
 
 class DeepSeekClient(GenericOpenAIClient):

@@ -9,7 +9,9 @@ import tempfile
 from typing import Any, Callable
 
 
-MARKER_CHAPTER_ID = "ZZZZZZZZZZZZZZZZ"
+MARKER_CHAPTER_ID = "7FFFFFFFFFFFFFFE"
+MARKER_QUEST_ID = "7FFFFFFFFFFFFFFD"
+MARKER_TASK_ID = "7FFFFFFFFFFFFFFC"
 
 
 def _write_text(path: str, content: str) -> None:
@@ -116,6 +118,7 @@ def write_quest_book(
         chapters_data = ai_data.get("chapters", [])
         title = ai_data.get("title", "Quest Book")
         chapter_groups = []
+        group_ids = {}
         chapter_qid_maps = []
         for chapter_index, chapter in enumerate(chapters_data):
             qid_map = {}
@@ -253,12 +256,18 @@ def write_quest_book(
                     (entry["icon"] for entry in quest_entries if ":" in entry.get("icon", "")),
                     "minecraft:wooden_pickaxe",
                 )
-            group_key = chapter.get("_group", chapter_uid)
+            group_key = str(chapter.get("_group", chapter_uid))
+            group_uid = group_ids.get(group_key)
+            if group_uid is None:
+                group_uid = uid().upper()
+                group_ids[group_key] = group_uid
+                config = group_config.get(group_key, {})
+                chapter_groups.append({"id": group_uid, "title": config.get("title", group_key)})
             chapter_entry = {
                 "default_hide_dependency_lines": False,
                 "default_quest_shape": "",
                 "filename": chapter_uid,
-                "group": group_key,
+                "group": group_uid,
                 "icon": chapter_icon,
                 "id": chapter_uid,
                 "order_index": chapter_index,
@@ -269,9 +278,6 @@ def write_quest_book(
             chapter_filename = f"{chapter_uid}.snbt"
             _write_text(os.path.join(chapters_dir, chapter_filename), to_snbt(chapter_entry))
             generated_files.append(chapter_filename)
-            if group_key not in [group.get("id") for group in chapter_groups]:
-                config = group_config.get(group_key, {})
-                chapter_groups.append({"id": group_key, "title": config.get("title", group_key)})
 
         marker = {
             "default_hide_dependency_lines": False,
@@ -283,14 +289,14 @@ def write_quest_book(
             "order_index": len(chapter_groups),
             "quest_links": [],
             "quests": [{
-                "id": "ZZZZZZZZZZZZZZZ0",
+                "id": MARKER_QUEST_ID,
                 "title": "本软件完全免费，此章节是用于检测生成结果，可随意删除",
                 "subtitle": "",
                 "icon": "minecraft:writable_book",
                 "x": double_value(0.0),
                 "y": double_value(0.0),
                 "shape": "square",
-                "tasks": [{"id": "ZZZZZZZZZZZZZZZ1", "type": "checkmark"}],
+                "tasks": [{"id": MARKER_TASK_ID, "type": "checkmark"}],
                 "dependencies": [],
                 "rewards": [],
             }],

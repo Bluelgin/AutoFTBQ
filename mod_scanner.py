@@ -7,6 +7,7 @@ import re
 import json
 import zipfile
 import threading
+import time
 from collections import defaultdict
 
 # 缓存
@@ -16,6 +17,12 @@ _recipe_inputs_cache = {}  # {output_item: [input_item_list]}
 _recipe_cache = {}
 _kubejs_namespaces = set()
 _cache_lock = threading.Lock()
+
+MAX_ARCHIVE_ENTRIES = 250_000
+MAX_ARCHIVE_UNCOMPRESSED_BYTES = 8 * 1024 * 1024 * 1024
+MAX_JSON_ENTRY_BYTES = 16 * 1024 * 1024
+MAX_JAR_SCAN_SECONDS = 120
+MAX_PROMPT_ITEMS_PER_NAMESPACE = 160
 
 
 def resolve_pack_paths(folder_path):
@@ -275,27 +282,47 @@ def scan_kubejs(kubejs_dir):
 # 核心扫描函数
 # ════════════════════════════════════════════════════════
 
-def scan_jar_items(filepath, max_items_per_ns=200):
+def scan_jar_items(filepath, max_items_per_ns=None):
     """
-    扫描单个JAR/ZIP文件，提取物品ID。
+    扫描单个JAR/ZIP文件，提取物品ID。默认不限制单命名空间数量。
+    ``max_items_per_ns`` 仅保留给兼容调用方主动限制扫描结果。
     返回: {namespace: {item_id: display_name, ...}, ...}
     """
     filepath = os.path.abspath(filepath)
     mtime = os.path.getmtime(filepath) if os.path.exists(filepath) else 0
+    use_shared_cache = max_items_per_ns is None
 
-    with _cache_lock:
-        cached = _item_cache.get(filepath)
-        recipe_cached = _recipe_cache.get(filepath)
-        if cached and cached[0] == mtime and recipe_cached and recipe_cached[0] == mtime:
-            _recipe_inputs_cache.update(recipe_cached[1])
-            return cached[1]
+    if use_shared_cache:
+        with _cache_lock:
+            cached = _item_cache.get(filepath)
+            recipe_cached = _recipe_cache.get(filepath)
+            if cached and cached[0] == mtime and recipe_cached and recipe_cached[0] == mtime:
+                _recipe_inputs_cache.update(recipe_cached[1])
+                return cached[1]
 
     result = defaultdict(dict)
     file_recipes = {}
     try:
         with zipfile.ZipFile(filepath, 'r') as zf:
-            # 获取文件列表
-            namelist = zf.namelist()
+            started_at = time.monotonic()
+            archive_entries = zf.infolist()
+            if len(archive_entries) > MAX_ARCHIVE_ENTRIES:
+                raise ValueError(f"archive has too many entries ({len(archive_entries)})")
+            uncompressed_size = sum(entry.file_size for entry in archive_entries)
+            if uncompressed_size > MAX_ARCHIVE_UNCOMPRESSED_BYTES:
+                raise ValueError(f"archive is too large when unpacked ({uncompressed_size} bytes)")
+            namelist = [entry.filename for entry in archive_entries]
+            entry_sizes = {entry.filename: entry.file_size for entry in archive_entries}
+
+            def check_deadline():
+                if time.monotonic() - started_at > MAX_JAR_SCAN_SECONDS:
+                    raise TimeoutError(f"scan exceeded {MAX_JAR_SCAN_SECONDS} seconds")
+
+            def read_json_entry(name):
+                if entry_sizes.get(name, 0) > MAX_JSON_ENTRY_BYTES:
+                    return None
+                check_deadline()
+                return json.loads(zf.read(name).decode('utf-8'))
 
             # ── 1. 从data目录检测命名空间 ──
             detected_ns = set()
@@ -316,8 +343,8 @@ def scan_jar_items(filepath, max_items_per_ns=200):
                                   f'assets/{ns}/lang/zh_cn.json',
                                   f'assets/{ns}/lang/en.json']:
                     try:
-                        with zf.open(lang_file) as lf:
-                            translations = json.loads(lf.read().decode('utf-8'))
+                        translations = read_json_entry(lang_file)
+                        if isinstance(translations, dict):
                             lang_map.update(translations)
                     except (KeyError, json.JSONDecodeError, UnicodeDecodeError):
                         pass
@@ -326,10 +353,12 @@ def scan_jar_items(filepath, max_items_per_ns=200):
             for ns in detected_ns:
                 prefix = f'assets/{ns}/models/item/'
                 count = 0
-                for name in namelist:
+                for entry_index, name in enumerate(namelist):
+                    if entry_index % 2048 == 0:
+                        check_deadline()
                     if not name.startswith(prefix) or not name.endswith('.json'):
                         continue
-                    if count >= max_items_per_ns:
+                    if max_items_per_ns is not None and count >= max_items_per_ns:
                         break
                     item_path = name[len(prefix):-len('.json')]  # e.g. "iron_pickaxe"
                     if not item_path or '/' in item_path:
@@ -348,10 +377,12 @@ def scan_jar_items(filepath, max_items_per_ns=200):
                 # ── 4. 提取方块ID — 从models/block/ ──
                 prefix_b = f'assets/{ns}/models/block/'
                 count_b = 0
-                for name in namelist:
+                for entry_index, name in enumerate(namelist):
+                    if entry_index % 2048 == 0:
+                        check_deadline()
                     if not name.startswith(prefix_b) or not name.endswith('.json'):
                         continue
-                    if count + count_b >= max_items_per_ns:
+                    if max_items_per_ns is not None and count + count_b >= max_items_per_ns:
                         break
                     block_path = name[len(prefix_b):-len('.json')]
                     if not block_path or '/' in block_path:
@@ -372,7 +403,7 @@ def scan_jar_items(filepath, max_items_per_ns=200):
                     if not name.startswith(adv_prefix) or not name.endswith('.json'):
                         continue
                     try:
-                        adv_data = json.loads(zf.read(name).decode('utf-8'))
+                        adv_data = read_json_entry(name)
                         if not isinstance(adv_data, dict):
                             continue
                         display = adv_data.get("display", {})
@@ -383,6 +414,8 @@ def scan_jar_items(filepath, max_items_per_ns=200):
                                 adv_icons.add(icon_id)
                         elif isinstance(icon, str) and ":" in icon and icon.startswith(ns + ":"):
                             adv_icons.add(icon)
+                    except TimeoutError:
+                        raise
                     except Exception:
                         pass
                 if adv_icons:
@@ -398,14 +431,15 @@ def scan_jar_items(filepath, max_items_per_ns=200):
                 for name in namelist:
                     if not name.startswith(recipe_prefix):
                         continue
-                    if len(seen_recipe_outputs) >= 50:
-                        break
                     try:
-                        raw = zf.read(name).decode('utf-8')
-                        recipe = json.loads(raw)
+                        recipe = read_json_entry(name)
+                        if not isinstance(recipe, dict):
+                            continue
                         output = recipe.get("result", "")
                         if isinstance(output, dict):
                             output = output.get("item", output.get("id", ""))
+                    except TimeoutError:
+                        raise
                     except Exception:
                         continue
                     if output and ":" in output:
@@ -420,7 +454,7 @@ def scan_jar_items(filepath, max_items_per_ns=200):
                     if not name.startswith(recipe_prefix2) or not name.endswith('.json'):
                         continue
                     try:
-                        recipe = json.loads(zf.read(name).decode('utf-8'))
+                        recipe = read_json_entry(name)
                         if not isinstance(recipe, dict):
                             continue
                         output = recipe.get("result", "")
@@ -433,17 +467,22 @@ def scan_jar_items(filepath, max_items_per_ns=200):
                             with _cache_lock:
                                 _recipe_inputs_cache[output] = inputs
                             file_recipes[output] = inputs
+                    except TimeoutError:
+                        raise
                     except Exception:
                         pass
 
-    except (zipfile.BadZipFile, IOError) as e:
+    except (zipfile.BadZipFile, OSError, TimeoutError, ValueError) as e:
         print(f"[WARN] Cannot scan {os.path.basename(filepath)}: {e}")
+        result.clear()
+        file_recipes.clear()
 
     # 缓存
     final = {ns: dict(items) for ns, items in result.items() if items}
-    with _cache_lock:
-        _item_cache[filepath] = (mtime, final)
-        _recipe_cache[filepath] = (mtime, dict(file_recipes))
+    if use_shared_cache:
+        with _cache_lock:
+            _item_cache[filepath] = (mtime, final)
+            _recipe_cache[filepath] = (mtime, dict(file_recipes))
     return final
 
 
@@ -512,13 +551,18 @@ def build_item_catalog_for_prompt(all_items, selected_mods):
             resolved_active_ns.add(ns)
         else:
             match = None
+            matching_mods = []
             # Level 1: 子串匹配 — ns 包含于某个实际 namespace，或反之
             for key in all_items:
                 if ns in key or key in ns:
                     match = key; break
             # Level 2: 文件名匹配 — 用 JAR 文件名（去掉版本号）再尝试
             if not match:
-                for m in selected_mods:
+                matching_mods = [
+                    mod for mod in selected_mods
+                    if str(mod.get("mod_id", "")).strip().lower() == str(ns).lower()
+                ]
+                for m in matching_mods:
                     fname = m.get("filename", "")
                     fname_clean = re.sub(r'[-_]\d+[.]\d+[.]\d+.*$', '', fname)
                     fname_clean = re.sub(r'[-_](mc|forge|fabric|release|alpha|beta).*$', '', fname_clean, flags=re.IGNORECASE)
@@ -531,7 +575,8 @@ def build_item_catalog_for_prompt(all_items, selected_mods):
                     if match: break
             resolved_active_ns.add(match or ns)
             if match and match != ns:
-                print(f"[NS RESOLVE] {ns} \u2192 {match} (via {m.get('filename', '?')})")
+                source_name = matching_mods[0].get("filename", "?") if matching_mods else "namespace"
+                print(f"[NS RESOLVE] {ns} \u2192 {match} (via {source_name})")
     active_ns = resolved_active_ns
 
     lines = ["=== 已验证的物品ID (请严格使用以下ID) ==="]
@@ -647,10 +692,19 @@ def build_item_catalog_for_prompt(all_items, selected_mods):
                 )
             ]
             filtered_count = len(sorted_ids) - len(functional_ids)
-            lines.append(f"\n  {ns} ({len(functional_ids)} functional items)")
-            for i in range(0, len(functional_ids), 15):
-                chunk = functional_ids[i:i+15]
+            recipe_outputs = set(_recipe_inputs_cache)
+            functional_ids.sort(key=lambda item_id: (item_id not in recipe_outputs, item_id))
+            prompt_ids = functional_ids[:MAX_PROMPT_ITEMS_PER_NAMESPACE]
+            lines.append(
+                f"\n  {ns} ({len(functional_ids)} functional items, "
+                f"showing {len(prompt_ids)})"
+            )
+            for i in range(0, len(prompt_ids), 15):
+                chunk = prompt_ids[i:i+15]
                 lines.append(f"    {', '.join(chunk)}")
+            omitted_count = len(functional_ids) - len(prompt_ids)
+            if omitted_count > 0:
+                lines.append(f"    ... ({omitted_count} more available through on-demand tools)")
             if filtered_count > 0:
                 lines.append(f"    ... (过滤 {filtered_count} 个装饰类物品)")
         else:
@@ -724,7 +778,7 @@ def auto_fix_item_ids(quest_data, all_items):
         chi = ch.get("icon", "")
         if chi and ":" in chi:
             ns = chi.split(":", 1)[0]
-            if not (ns in all_items and chi in all_items[ns]):
+            if ns != "minecraft" and not (ns in all_items and chi in all_items[ns]):
                 best = _find_best_match(chi, all_items, ns)
                 if best:
                     print(f"[FIX] Chapter '{ch.get('title', '?')}' icon: {chi} → {best}")
@@ -739,7 +793,7 @@ def auto_fix_item_ids(quest_data, all_items):
             qi_icon = q.get("icon", "")
             if qi_icon and ":" in qi_icon:
                 ns = qi_icon.split(":", 1)[0]
-                if not (ns in all_items and qi_icon in all_items[ns]):
+                if ns != "minecraft" and not (ns in all_items and qi_icon in all_items[ns]):
                     best = _find_best_match(qi_icon, all_items, ns)
                     if best:
                         print(f"[FIX] Quest '{qtitle}' icon: {qi_icon} → {best}")
@@ -755,10 +809,15 @@ def auto_fix_item_ids(quest_data, all_items):
                                 break
             # 修正 tasks
             for t in q.get("tasks", []):
+                task_type = str(t.get("type", "item")).lower().split(":", 1)[-1]
+                if task_type != "item":
+                    continue
                 target = t.get("target", "")
                 if not target or ":" not in target:
                     continue
                 ns = target.split(":", 1)[0]
+                if ns == "minecraft":
+                    continue
                 if ns in all_items and target in all_items[ns]:
                     continue  # 有效
                 best = _find_best_match(target, all_items, ns)
@@ -766,15 +825,6 @@ def auto_fix_item_ids(quest_data, all_items):
                     print(f"[FIX] Task '{qtitle}': {target} → {best}")
                     t["target"] = best
                     fix_count += 1
-                elif ns == "minecraft" and ns in all_items:
-                    # 尝试修正原版物品ID的拼写错误
-                    best = _find_best_match(target, all_items, ns)
-                    if best:
-                        print(f"[FIX] Task '{qtitle}': {target} → {best}")
-                        t["target"] = best
-                        fix_count += 1
-                    else:
-                        unfixable.append({"id": target, "location": f"Task in '{qtitle}'", "reason": "Minecraft ID 无法匹配到任何已知物品"})
                 elif ns not in all_items:
                     unfixable.append({"id": target, "location": f"Task in '{qtitle}'", "reason": f"Mod '{ns}' 不在已安装的 Mod 列表中，无法验证此 ID"})
                 else:
@@ -782,10 +832,15 @@ def auto_fix_item_ids(quest_data, all_items):
 
             # 修正 rewards
             for r in q.get("rewards", []):
+                reward_type = str(r.get("type", "item")).lower().split(":", 1)[-1]
+                if reward_type != "item":
+                    continue
                 target = r.get("target", "")
                 if not target or ":" not in target:
                     continue
                 ns = target.split(":", 1)[0]
+                if ns == "minecraft":
+                    continue
                 if ns in all_items and target in all_items[ns]:
                     continue
                 best = _find_best_match(target, all_items, ns)
@@ -793,14 +848,6 @@ def auto_fix_item_ids(quest_data, all_items):
                     print(f"[FIX] Reward in '{qtitle}': {target} → {best}")
                     r["target"] = best
                     fix_count += 1
-                elif ns == "minecraft" and ns in all_items:
-                    best_mc = _find_best_match(target, all_items, ns)
-                    if best_mc:
-                        print(f"[FIX] Reward in '{qtitle}': {target} → {best_mc}")
-                        r["target"] = best_mc
-                        fix_count += 1
-                    else:
-                        unfixable.append({"id": target, "location": f"Reward in '{qtitle}'", "reason": "Minecraft ID 无法匹配到任何已知物品"})
                 elif ns not in all_items:
                     unfixable.append({"id": target, "location": f"Reward in '{qtitle}'", "reason": f"Mod '{ns}' 不在已安装的 Mod 列表中，无法验证此 ID"})
                 else:

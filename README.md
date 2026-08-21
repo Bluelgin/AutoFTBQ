@@ -7,7 +7,7 @@
 ![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)
 ![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey.svg)
 ![License](https://img.shields.io/badge/License-GPL--3.0-green.svg)
-![Version](https://img.shields.io/badge/Version-1.3.7-orange.svg)
+![Version](https://img.shields.io/badge/Version-1.3.8-orange.svg)
 [![Downloads](https://img.shields.io/github/downloads/Bluelgin/AutoFTBQ/total?color=blue&label=Downloads)](https://github.com/Bluelgin/AutoFTBQ/releases)
 
 ## 先说它能做什么
@@ -23,6 +23,15 @@
 - 支持中文和英文界面，以及自定义输出目录。
 
 > 目前稳定版支持 DeepSeek、Ollama，以及手动配置的 OpenAI 兼容 API。第三方服务没有统一的模型列表和错误格式，所以自定义 API 需要用户自己填写并确认参数。
+
+## v1.3.8 更新
+
+- 改用完整分阶段生成：程序负责章节配额、批次续写、全局去重和最终质量检查。
+- AI 可按需查询整合包中的真实物品与配方，DeepSeek 工具调用过多时也能正确汇总结果。
+- JAR 物品扫描不再限制单命名空间数量，同时保留异常压缩包安全护栏；完整索引不会全部塞进提示词。
+- 修复章节分组 ID、SNBT 正文换行、Boss/维度目标误当物品校验等导致章节缺失的问题。
+- 自动识别实例版本、加载器和 FTB Quests 版本，并优先输出到当前实例的任务书目录。
+- 生成后输出质量报告，检查空章节、重复目标、无效依赖、正文缺失和物品 ID。
 
 ## v1.3.7 更新
 
@@ -207,19 +216,32 @@ kubejs/
 
 ### 4. 生成并导入游戏
 
-生成完成后，默认输出到：
+选择整合包或它的 `mods` 文件夹后，软件会尝试识别 Minecraft、加载器和对应实例的 FTB Quests 目录，并自动填写：
+
+```text
+<整合包实例>/config/ftbquests/quests/
+```
+
+如果没有识别出实例，留空时才会保存到软件旁边的：
 
 ```text
 questbook_output/
 ```
 
-把输出目录中的内容复制到对应整合包的：
+生成采用临时目录写入和失败回滚；完成后还会检查 `data.snbt`、章节文件和任务数量，避免空任务书被误报为成功。然后重新进入游戏或重新加载 FTB Quests。
 
-```text
-.minecraft/config/ftbquests/quests/
-```
+## 按需检索与质量检查
 
-然后重新进入游戏或重新加载 FTB Quests。
+AutoFTBQ 不再把整合包的全部物品一次性塞入每轮提示词。软件会先建立本地物品、配方和 KubeJS 索引，再根据当前章节按需取出相关内容：
+
+- 每批只提供当前章节允许使用的命名空间和高相关物品。
+- 配方前置和未覆盖目标会随着生成进度动态更新。
+- 支持 OpenAI 兼容 `tool_calls` 的模型可以主动搜索物品和配方；不支持时会自动降级为软件检索。
+- 整本任务书共用覆盖记录，避免相同目标被重复放进不同章节。
+- AI 数量不足时只使用实际扫描到的唯一物品补充，不再批量制造确认任务凑数。
+- 基础正文属于必需内容；AI 没有返回正文时，程序会按任务目标补全。
+
+生成结束后 `quality_report.txt` 会记录正文补全、全局去重、失效依赖和最终发布状态。AI 润色仍是可选功能，只负责改善表达风格，不再承担“有没有正文”这一基础职责。
 
 ## KubeJS 支持
 
@@ -254,7 +276,8 @@ questbook_output/
 │  └─ ...
 ├─ reward_tables/
 ├─ ai_raw_output.txt
-└─ id_validation_report.txt
+├─ id_validation_report.txt
+└─ quality_report.txt
 ```
 
 - `data.snbt`：任务书全局配置。
@@ -262,6 +285,7 @@ questbook_output/
 - `chapters/`：每个章节的任务、依赖、奖励和坐标。
 - `ai_raw_output.txt`：AI 原始输出，方便排查生成问题。
 - `id_validation_report.txt`：物品 ID 校验结果。
+- `quality_report.txt`：正文补全、全局去重、失效依赖和发布检查结果。
 
 ## 常见问题
 

@@ -105,7 +105,7 @@ def build_fallback_quests(
     existing_quests: list[dict],
     all_items: dict,
 ) -> list[dict]:
-    """Fill model shortfalls from scanned IDs, then deterministic checkmarks."""
+    """Fill model shortfalls only from unique scanned IDs with real evidence."""
     existing_titles = {
         str(quest.get("title", "")).lower()
         for quest in existing_quests
@@ -133,20 +133,16 @@ def build_fallback_quests(
         result.append({
             "title": title,
             "subtitle": f"获取并了解 {display_name} 的用途",
+            "description": [
+                f"找到或制作 {display_name}，并确认它在当前玩法阶段中的用途。",
+                "这个目标来自整合包实际扫描到的物品，而不是临时填充内容。",
+            ],
             "tasks": [{"type": "item", "target": item_id, "count": 1}],
             "rewards": [{"type": "xp", "count": 10}],
         })
         existing_items.add(item_id)
         existing_titles.add(title.lower())
 
-    while len(result) < count:
-        number = len(existing_quests) + len(result) + 1
-        result.append({
-            "title": f"实践·{chapter['title']}阶段总结 {number}",
-            "subtitle": "确认已经理解并完成本阶段的关键玩法",
-            "tasks": [{"type": "checkmark"}],
-            "rewards": [{"type": "xp", "count": 10}],
-        })
     return result
 
 

@@ -81,7 +81,7 @@ class QuestPlannerTests(unittest.TestCase):
         self.assertEqual(custom["namespaces"], ["pack_custom"])
         self.assertEqual(custom["target"], 10)
 
-    def test_fallback_always_fills_exact_count_without_reusing_items(self):
+    def test_fallback_stops_when_unique_evidence_is_exhausted(self):
         chapter = {
             "title": "Machines",
             "namespaces": ["example"],
@@ -99,9 +99,9 @@ class QuestPlannerTests(unittest.TestCase):
 
         fallback = build_fallback_quests(chapter, 3, existing, all_items)
 
-        self.assertEqual(len(fallback), 3)
+        self.assertEqual(len(fallback), 1)
         self.assertEqual(fallback[0]["tasks"][0]["target"], "example:second")
-        self.assertEqual(fallback[1]["tasks"][0]["type"], "checkmark")
+        self.assertTrue(fallback[0]["description"])
 
     def test_normalized_layout_uses_only_valid_dependencies(self):
         source = [

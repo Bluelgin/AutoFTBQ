@@ -3,6 +3,7 @@ import os
 import tempfile
 import unittest
 import zipfile
+from unittest.mock import patch
 
 import mod_scanner
 
@@ -102,6 +103,97 @@ class KubeJSScannerTests(unittest.TestCase):
         items = mod_scanner.scan_folder_items(self.root)
 
         self.assertNotIn("kubejs", items)
+
+    def test_scanner_keeps_large_mod_item_catalogs(self):
+        jar_path = os.path.join(self.root, "mods", "large-mod.jar")
+        with zipfile.ZipFile(jar_path, "w") as archive:
+            for index in range(5105):
+                archive.writestr(
+                    f"assets/large/models/item/item_{index:03d}.json",
+                    "{}",
+                )
+
+        items = mod_scanner.scan_jar_items(jar_path)
+
+        self.assertEqual(len(items["large"]), 5105)
+
+    def test_limited_scan_does_not_poison_unlimited_cache(self):
+        jar_path = os.path.join(self.root, "mods", "cache-limit.jar")
+        with zipfile.ZipFile(jar_path, "w") as archive:
+            for index in range(5):
+                archive.writestr(
+                    f"assets/cachelimit/models/item/item_{index}.json",
+                    "{}",
+                )
+
+        limited = mod_scanner.scan_jar_items(jar_path, max_items_per_ns=2)
+        complete = mod_scanner.scan_jar_items(jar_path)
+
+        self.assertEqual(len(limited["cachelimit"]), 2)
+        self.assertEqual(len(complete["cachelimit"]), 5)
+
+    def test_scanner_rejects_abnormally_large_archive_entry_counts(self):
+        jar_path = os.path.join(self.root, "mods", "suspicious.jar")
+        with zipfile.ZipFile(jar_path, "w") as archive:
+            for index in range(3):
+                archive.writestr(f"assets/test/models/item/item_{index}.json", "{}")
+
+        with patch.object(mod_scanner, "MAX_ARCHIVE_ENTRIES", 2):
+            items = mod_scanner.scan_jar_items(jar_path)
+
+        self.assertEqual(items, {})
+
+    def test_legacy_prompt_catalog_stays_bounded_after_full_scan(self):
+        items = {
+            "huge": {
+                f"huge:item_{index:03d}": f"Item {index}"
+                for index in range(240)
+            },
+        }
+
+        catalog = mod_scanner.build_item_catalog_for_prompt(
+            items,
+            [{"mod_id": "huge", "filename": "huge-1.0.jar"}],
+        )
+
+        self.assertIn("showing 160", catalog)
+        self.assertIn("80 more available through on-demand tools", catalog)
+        self.assertNotIn("huge:item_239", catalog)
+
+    def test_namespace_resolution_does_not_use_unrelated_mod_filenames(self):
+        catalog = mod_scanner.build_item_catalog_for_prompt(
+            {"goety": {"goety:focus": "Focus"}},
+            [
+                {"mod_id": "missing", "filename": "missing-1.0.jar"},
+                {"mod_id": "goety", "filename": "goety-1.0.jar"},
+            ],
+        )
+
+        self.assertIn("missing: (no items scanned", catalog)
+
+    def test_non_item_task_targets_are_not_fuzzy_fixed_as_items(self):
+        quest_data = {
+            "chapters": [{
+                "title": "Boss",
+                "quests": [{
+                    "title": "Defeat boss",
+                    "tasks": [
+                        {"type": "kill", "target": "bossmod:ancient_guardian"},
+                        {"type": "dimension", "target": "bossmod:dark_realm"},
+                    ],
+                    "rewards": [],
+                }],
+            }],
+        }
+
+        fixed, fix_count, unfixable = mod_scanner.auto_fix_item_ids(
+            quest_data,
+            {"bossmod": {"bossmod:ancient_guardian_spawn_egg": "Spawn Egg"}},
+        )
+
+        self.assertEqual(fixed, quest_data)
+        self.assertEqual(fix_count, 0)
+        self.assertEqual(unfixable, [])
 
     def test_json_recipe_uses_only_ingredient_fields(self):
         recipe = {

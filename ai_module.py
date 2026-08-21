@@ -69,6 +69,9 @@ try:
         normalize_chapter_quests,
     )
     from .quest_writer import write_quest_book
+    from .quest_quality import repair_and_validate_quest_book, quality_report_text
+    from .quest_tools import QuestToolbox
+    from .instance_resolver import application_dir, resolve_instance
     from .quest_layout import relayout_quest_book
     from .quest_polish import QuestPolishService
     from .human_corpus import HumanQuestCorpus
@@ -121,6 +124,9 @@ except ImportError:
         normalize_chapter_quests,
     )
     from quest_writer import write_quest_book
+    from quest_quality import repair_and_validate_quest_book, quality_report_text
+    from quest_tools import QuestToolbox
+    from instance_resolver import application_dir, resolve_instance
     from quest_layout import relayout_quest_book
     from quest_polish import QuestPolishService
     from human_corpus import HumanQuestCorpus
@@ -146,7 +152,10 @@ def _snbt_value(val, indent=4, level=0):
         if '.' not in s: s += '.0'
         return s + 'd'
     if isinstance(val, int): return str(val)
-    if isinstance(val, str): return '"'+val.replace("\\","\\\\").replace('"','\\"')+'"'
+    if isinstance(val, str):
+        cleaned = re.sub(r"[\r\n\t]+", " ", val)
+        cleaned = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", cleaned)
+        return '"' + cleaned.replace("\\", "\\\\").replace('"', '\\"') + '"'
     if isinstance(val, list): return _snbt_list(val, indent, level)
     if isinstance(val, dict): return _snbt_dict(val, indent, level)
     return str(val)
@@ -624,9 +633,11 @@ class QuestBookGenerator:
         self.prog_mods, self.util_mods, self.addon_mods, self.unk = classify_mods(selected_mods or [])
         self._all_items = None  # 扫描结果缓存
         self._knowledge_base = None
+        self._toolbox = None
         self.use_wiki = False
         self.max_output_tokens = max_output_tokens
         self.polish_after_generate = polish_after_generate
+        self.instance_info = resolve_instance(mod_folder) if mod_folder else None
 
     def _progress(self, msg, pct=None):
         if self.cb: self.cb(msg, pct)
@@ -672,6 +683,10 @@ class QuestBookGenerator:
             item_catalog = recipe_hints + "\n\n" + item_catalog
 
         self._knowledge_base = QuestKnowledgeBase(
+            scanned_items,
+            dict(getattr(_ms, "_recipe_inputs_cache", {})),
+        )
+        self._toolbox = QuestToolbox(
             scanned_items,
             dict(getattr(_ms, "_recipe_inputs_cache", {})),
         )
@@ -854,6 +869,20 @@ class QuestBookGenerator:
         )
 
     def _chapter_catalog(self, chapter):
+        if self._toolbox is None:
+            self._toolbox = QuestToolbox(
+                self._all_items or {},
+                dict(getattr(_ms, "_recipe_inputs_cache", {})),
+            )
+        namespaces = list(chapter.get("namespaces", []))
+        namespaces.extend(
+            mod.get("mod_id", "")
+            for mod in chapter.get("mods", [])
+            if isinstance(mod, dict)
+        )
+        bounded_catalog = self._toolbox.build_item_catalog(namespaces)
+        if bounded_catalog:
+            return bounded_catalog
         selected = chapter.get("mods", [])
         if not selected and chapter.get("namespaces") == ["minecraft"]:
             selected = []
@@ -869,11 +898,23 @@ class QuestBookGenerator:
         return self._knowledge_base
 
     def _build_chapter_context(self, chapter, existing_quests, catalog):
-        return self._ensure_knowledge_base().build_context(
+        context = self._ensure_knowledge_base().build_context(
             chapter,
             existing_quests,
             catalog,
         )
+        if self.instance_info and (
+            self.instance_info.minecraft_version or self.instance_info.loader
+        ):
+            environment = (
+                "=== INSTANCE ENVIRONMENT ===\n"
+                f"Minecraft: {self.instance_info.minecraft_version or 'unknown'}; "
+                f"Loader: {self.instance_info.loader or 'unknown'}; "
+                f"FTB Quests: {self.instance_info.ftb_quests_version or 'unknown'}\n"
+                "Keep IDs and task types compatible with this environment.\n\n"
+            )
+            return environment + context
+        return context
 
     def _filter_stage_quests(self, chapter, quests, existing_quests):
         return self._ensure_knowledge_base().filter_new_quests(
@@ -898,6 +939,22 @@ class QuestBookGenerator:
     def _deduplicate_stage_quests(self, quests, existing_titles=None):
         return deduplicate_stage_quests(quests, existing_titles)
 
+    def _chat_stage_batch(self, messages, temperature, max_tokens):
+        if self._toolbox is not None and hasattr(self.client, "chat_with_tools"):
+            return self.client.chat_with_tools(
+                messages,
+                self._toolbox.tool_specs(),
+                self._toolbox.call_tool,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                max_rounds=3,
+            )
+        return self.client.chat(
+            messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+
     def _fallback_stage_quests(self, chapter, count, existing_quests):
         return build_fallback_quests(
             chapter,
@@ -921,6 +978,7 @@ class QuestBookGenerator:
             max_tokens=self._calc_max_tokens,
             build_context=self._build_chapter_context,
             filter_batch=self._filter_stage_quests,
+            chat_batch=self._chat_stage_batch,
         )
         service = StagedGenerationService(
             self.client,
@@ -1028,10 +1086,11 @@ class QuestBookGenerator:
 
     def _save_snbt_files(self, quest_json_text, scanned_items=None, output_dir=None):
         SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-        if output_dir and os.path.isdir(os.path.dirname(output_dir)):
-            base_dir = output_dir
-        else:
-            base_dir = os.path.join(SCRIPT_DIR, OUTPUT_DIR_NAME)
+        base_dir = (
+            os.path.abspath(os.path.expanduser(output_dir))
+            if output_dir
+            else os.path.join(application_dir(SCRIPT_DIR), OUTPUT_DIR_NAME)
+        )
         os.makedirs(base_dir, exist_ok=True)
         chapters_dir = os.path.join(base_dir, "chapters")
         os.makedirs(chapters_dir, exist_ok=True)
@@ -1072,7 +1131,15 @@ class QuestBookGenerator:
                 "=== 物品ID自动修正报告 ===",
                 f"成功修正: {fix_count} 个物品ID",
                 f"无法修正: {len(unfixable)} 个物品ID",
+                "说明: 原版 Minecraft ID 由游戏注册表决定，离线模式仅保留原值，不进行危险的近似替换。",
             ]
+            if self.instance_info:
+                report_lines.append(
+                    "环境: "
+                    f"Minecraft {self.instance_info.minecraft_version or '未知'} / "
+                    f"{self.instance_info.loader or '未知加载器'} / "
+                    f"FTB Quests {self.instance_info.ftb_quests_version or '未知'}"
+                )
             if unfixable:
                 report_lines.append("\n--- 无法修正的物品ID ---")
                 for item in unfixable:
@@ -1089,12 +1156,19 @@ class QuestBookGenerator:
         # 给所有章节分配分组标签
         self._annotate_chapter_groups(ai_data)
 
+        quality = repair_and_validate_quest_book(ai_data, scanned_items or {})
+        if not quality.publishable:
+            report_path = os.path.join(base_dir, "quality_report.txt")
+            with open(report_path, "w", encoding="utf-8") as handle:
+                handle.write(quality_report_text(quality))
+            raise Exception(f"任务书未通过发布检查，请查看 {report_path}")
+
         # Human-style layout: mainline row, staggered branches, info row.
         try:
             relayout_quest_book(ai_data)
-            self._progress("鎸変汉宸ュ啓娉曢噸鎺掍换鍔″竷灞€...", 82)
+            self._progress("按人工任务书风格重排布局...", 82)
         except Exception as exc:
-            print(f"[LAYOUT] 甯冨眬閲嶆帓澶辫触锛堜笉褰卞搷鐢熸垚锛?: {exc}")
+            print(f"[LAYOUT] 布局重排失败（不影响生成）: {exc}")
 
         # Optional AI polish pass toward human-written wording.
         if getattr(self, "polish_after_generate", False) and self.client is not None:
@@ -1106,12 +1180,37 @@ class QuestBookGenerator:
                     progress=self._progress,
                     max_quests_per_batch=8,
                 )
-                self._progress("AI 姝ｅ湪鎸変汉宸ュ啓娉曢€愮珷鍝佽疮鏂囨...", 85)
+                self._progress("AI 正在按人工写法逐章润色文案...", 85)
                 ai_data, _ = polish.polish_book(ai_data)
             except Exception as exc:
-                print(f"[POLISH] 鍝佽疮澶辫触锛堜笉褰卞搷鐢熸垚锛?: {exc}")
+                print(f"[POLISH] 润色失败（不影响生成）: {exc}")
 
-        return self._write_snbt_files(base_dir, ai_data)
+        final_quality = repair_and_validate_quest_book(ai_data, scanned_items or {})
+        quality.descriptions_added += final_quality.descriptions_added
+        quality.duplicate_goals_removed += final_quality.duplicate_goals_removed
+        quality.duplicate_titles_renamed += final_quality.duplicate_titles_renamed
+        quality.broken_dependencies_removed += final_quality.broken_dependencies_removed
+        quality.warnings.extend(final_quality.warnings)
+        quality.errors.extend(final_quality.errors)
+        quality.chapters = final_quality.chapters
+        quality.quests = final_quality.quests
+        if not final_quality.publishable:
+            report_path = os.path.join(base_dir, "quality_report.txt")
+            with open(report_path, "w", encoding="utf-8") as handle:
+                handle.write(quality_report_text(quality))
+            raise Exception(f"润色后的任务书未通过发布检查，请查看 {report_path}")
+
+        saved_dir = self._write_snbt_files(base_dir, ai_data)
+        with open(os.path.join(base_dir, "quality_report.txt"), "w", encoding="utf-8") as handle:
+            handle.write(quality_report_text(quality))
+        chapter_dir = os.path.join(base_dir, "chapters")
+        generated_chapters = [
+            name for name in os.listdir(chapter_dir)
+            if name.endswith(".snbt") and name != "ZZZZZZZZZZZZZZZZ.snbt"
+        ]
+        if not generated_chapters or not os.path.isfile(os.path.join(base_dir, "data.snbt")):
+            raise Exception("生成文件检查失败：没有可用章节或缺少 data.snbt")
+        return saved_dir
 
     def _reorganize_chapters(self, quest_json_text):
         return reorganize_json(quest_json_text)

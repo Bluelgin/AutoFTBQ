@@ -10,6 +10,7 @@ except ModuleNotFoundError:
     sys.modules["requests"] = types.ModuleType("requests")
 
 from ai_module import QuestBookGenerator
+from instance_resolver import InstanceInfo
 
 
 class ExactClient:
@@ -95,7 +96,7 @@ class StagedGenerationTests(unittest.TestCase):
             self.assertIn("x", quest)
             self.assertIn("y", quest)
 
-    def test_fills_model_shortfall_to_exact_quota(self):
+    def test_model_shortfall_uses_only_evidence_backed_fallbacks(self):
         client = EmptyClient()
         self.generator.client = client
         self.generator._build_generation_plan = lambda: _small_plan(3, 3)
@@ -106,6 +107,11 @@ class StagedGenerationTests(unittest.TestCase):
         self.assertEqual(client.calls, 3)
         self.assertEqual(len(quests), 3)
         self.assertEqual(quests[0]["tasks"][0]["target"], "minecraft:stone")
+        self.assertTrue(all(quest["description"] for quest in quests))
+        self.assertEqual(
+            len({quest["tasks"][0]["target"] for quest in quests}),
+            len(quests),
+        )
 
     def test_malformed_ollama_shape_falls_back_without_attribute_error(self):
         client = InvalidShapeClient()
@@ -115,6 +121,10 @@ class StagedGenerationTests(unittest.TestCase):
         result = json.loads(self.generator._generate_questbook_staged())
 
         self.assertEqual(len(result["chapters"][0]["quests"]), 2)
+        self.assertTrue(all(
+            quest["tasks"][0]["type"] == "item"
+            for quest in result["chapters"][0]["quests"]
+        ))
         self.assertEqual(client.calls, 3)
 
     def test_staged_failure_is_not_hidden_by_legacy_generation(self):
@@ -136,6 +146,41 @@ class StagedGenerationTests(unittest.TestCase):
             self.assertTrue(all(isinstance(chapter["target"], int) for chapter in plan))
         self.assertEqual(totals, sorted(totals))
         self.assertEqual(len(totals), len(set(totals)))
+
+    def test_fallback_targets_are_unique_across_chapters(self):
+        self.generator.client = EmptyClient()
+        self.generator._build_generation_plan = lambda: [
+            {**_small_plan(2, 2)[0], "id": "first", "title": "First"},
+            {**_small_plan(2, 2)[0], "id": "second", "title": "Second"},
+        ]
+
+        result = json.loads(self.generator._generate_questbook_staged())
+
+        targets = [
+            quest["tasks"][0]["target"]
+            for chapter in result["chapters"]
+            for quest in chapter["quests"]
+        ]
+        self.assertEqual(len(targets), len(set(targets)))
+
+    def test_chapter_context_contains_detected_instance_version(self):
+        self.generator.instance_info = InstanceInfo(
+            root="pack",
+            mods_dir="pack/mods",
+            quests_dir="pack/config/ftbquests/quests",
+            minecraft_version="1.20.1",
+            loader="Forge",
+            ftb_quests_version="2001.4.17",
+        )
+
+        context = self.generator._build_chapter_context(
+            _small_plan(1, 1)[0],
+            [],
+            "minecraft:stone",
+        )
+
+        self.assertIn("Minecraft: 1.20.1", context)
+        self.assertIn("Loader: Forge", context)
 
 
 if __name__ == "__main__":

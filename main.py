@@ -6,12 +6,15 @@ import os, sys, json, subprocess, threading, webbrowser, time
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
+from instance_resolver import application_dir, resolve_instance, suggested_output_dir
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
+APP_DIR = application_dir(SCRIPT_DIR)
 
-APP_NAME = "AutoFTBQ"; VERSION = "1.3.7"; AUTHOR = "Taki"
-CONFIG_PATH = os.path.join(SCRIPT_DIR, "config.json")
+APP_NAME = "AutoFTBQ"; VERSION = "1.3.8"; AUTHOR = "Taki"
+CONFIG_PATH = os.path.join(APP_DIR, "config.json")
 
 AI_AVAILABLE = False; AI_IMPORT_ERROR = ""
 scan_mod_folder = None; generate_quest_book = None
@@ -945,7 +948,7 @@ class App:
         sec3 = tk.Frame(mf, bg="#ffffff"); sec3.pack(fill=tk.X, pady=(0, 10))
         tk.Label(sec3, text="输出目录 (可选)", font=("Microsoft YaHei", 10, "bold"),
                  fg="#555555", bg="#ffffff").pack(anchor=tk.W)
-        tk.Label(sec3, text="留空则保存到软件目录下的 questbook_output 文件夹",
+        tk.Label(sec3, text="选择整合包后会自动识别其 FTB Quests 目录；也可以手动修改",
                  font=sf, fg="#aaaaaa", bg="#ffffff").pack(anchor=tk.W, pady=(2, 4))
         row3 = tk.Frame(sec3, bg="#ffffff"); row3.pack(fill=tk.X)
         self.output_entry = tk.Entry(row3, textvariable=self.output_dir_var, font=df,
@@ -1303,6 +1306,9 @@ class App:
             return
         folder = filedialog.askdirectory(title=t("mod_folder"))
         if folder:
+            previous_folder = self.mod_folder_var.get().strip()
+            previous_auto_output = suggested_output_dir(previous_folder) if previous_folder else ""
+            current_output = self.output_dir_var.get().strip()
             self.mod_folder_var.set(folder)
             self.selected_mods = []
             if hasattr(self, 'save_prompt_api_btn'):
@@ -1310,7 +1316,21 @@ class App:
             try:
                 self._detected_mods = scan_mod_folder(folder)
                 n = len(self._detected_mods)
-                self.mod_status_label.config(text=f"检测到 {n} 个Mod  |  已选: 0", fg="#888888")
+                info = resolve_instance(folder)
+                version_text = ""
+                if info and (info.minecraft_version or info.loader):
+                    version_text = f"  |  {info.minecraft_version or '未知版本'} {info.loader}".rstrip()
+                self.mod_status_label.config(text=f"检测到 {n} 个Mod  |  已选: 0{version_text}", fg="#888888")
+                output_was_automatic = (
+                    previous_auto_output
+                    and os.path.normcase(os.path.abspath(current_output))
+                    == os.path.normcase(os.path.abspath(previous_auto_output))
+                )
+                if not current_output or output_was_automatic:
+                    detected_output = suggested_output_dir(folder)
+                    if detected_output:
+                        self.output_dir_var.set(detected_output)
+                        self._save_config()
                 if n:
                     self.set_info(t("found_mods", n), "success")
                 else:
@@ -1626,7 +1646,25 @@ class App:
             self.progress_bar["value"] = 100
         if hasattr(self, 'progress_label'):
             self.progress_label.config(text="Done!")
-        if messagebox.askyesno(t("success_title"), t("success_msg", path)):
+        summary = ""
+        try:
+            quality_path = os.path.join(path, "quality_report.txt")
+            with open(quality_path, "r", encoding="utf-8") as handle:
+                values = {}
+                for line in handle:
+                    if ": " in line:
+                        key, value = line.strip().split(": ", 1)
+                        if key in ("状态", "章节", "任务"):
+                            values[key] = value
+                if values:
+                    summary = (
+                        f"\n\n质量检查: {values.get('状态', '已完成')}"
+                        f"  |  {values.get('章节', '?')} 章节"
+                        f"  |  {values.get('任务', '?')} 任务"
+                    )
+        except (OSError, ValueError):
+            summary = ""
+        if messagebox.askyesno(t("success_title"), t("success_msg", path) + summary):
             try: os.startfile(path)
             except Exception: subprocess.Popen(["explorer", path], shell=True)
 
