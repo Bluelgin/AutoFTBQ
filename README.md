@@ -7,7 +7,7 @@
 ![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)
 ![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey.svg)
 ![License](https://img.shields.io/badge/License-GPL--3.0-green.svg)
-![Version](https://img.shields.io/badge/Version-1.3.8-orange.svg)
+![Version](https://img.shields.io/badge/Version-1.3.9-orange.svg)
 [![Downloads](https://img.shields.io/github/downloads/Bluelgin/AutoFTBQ/total?color=blue&label=Downloads)](https://github.com/Bluelgin/AutoFTBQ/releases)
 
 ## 先说它能做什么
@@ -23,6 +23,12 @@
 - 支持中文和英文界面，以及自定义输出目录。
 
 > 目前稳定版支持 DeepSeek、Ollama，以及手动配置的 OpenAI 兼容 API。第三方服务没有统一的模型列表和错误格式，所以自定义 API 需要用户自己填写并确认参数。
+
+## v1.3.9 更新
+
+- 修复部分启动器版本 JSON 结构不同，导致生成任务刚开始便自动结束的问题。
+- 第三方 API 不兼容工具调用时自动退回普通聊天生成，不再直接中断任务。
+- 生成进度和结果改由主界面安全接收，失败时会显示原因并保存 `generation_error.log`。
 
 ## v1.3.8 更新
 

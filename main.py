@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """AutoFTBQ - MC FTB Quest Book Generator"""
 
-import os, sys, json, subprocess, threading, webbrowser, time
+import os, sys, json, queue, subprocess, threading, traceback, webbrowser, time
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
@@ -13,7 +13,7 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 APP_DIR = application_dir(SCRIPT_DIR)
 
-APP_NAME = "AutoFTBQ"; VERSION = "1.3.8"; AUTHOR = "Taki"
+APP_NAME = "AutoFTBQ"; VERSION = "1.3.9"; AUTHOR = "Taki"
 CONFIG_PATH = os.path.join(APP_DIR, "config.json")
 
 AI_AVAILABLE = False; AI_IMPORT_ERROR = ""
@@ -533,6 +533,7 @@ class App:
         )
         self.max_output_tokens_var = tk.StringVar(value=self.config.get("max_output_tokens", ""))
         self.generating = False
+        self._generation_events = queue.Queue()
         self._update_checking = False
         self._update_checked = False
         self._update_request_id = 0
@@ -541,6 +542,7 @@ class App:
         self._detected_mods = []
 
         self._build_ui()
+        self.root.after(50, self._poll_generation_events)
         self.root.update_idletasks()
         self._center_window()
         self._refresh_text()
@@ -1411,8 +1413,31 @@ class App:
             self.info_label.config(fg=fg, bg=bg); self.info_frame.config(bg=bg)
 
     def _on_progress(self, msg, pct):
-        if not self.generating: return
-        self.root.after(0, self._set_progress_ui, msg, pct)
+        if self.generating:
+            self._generation_events.put(("progress", msg, pct))
+
+    def _poll_generation_events(self):
+        try:
+            while True:
+                event, value, extra = self._generation_events.get_nowait()
+                if event == "progress":
+                    if self.generating:
+                        self._set_progress_ui(value, extra)
+                    continue
+                try:
+                    if event == "done":
+                        self._on_done(value)
+                    else:
+                        self._on_fail(value)
+                finally:
+                    self.generating = False
+                    self._on_finish()
+        except queue.Empty:
+            pass
+        try:
+            self.root.after(50, self._poll_generation_events)
+        except tk.TclError:
+            pass
 
     def _set_progress_ui(self, msg, pct):
         try:
@@ -1636,9 +1661,19 @@ class App:
                 max_output_tokens=max_output_tokens,
                 polish_after_generate=polish_after_generate
             )
-            self.root.after(0, self._on_done, out)
-        except Exception as e: self.root.after(0, self._on_fail, str(e))
-        finally: self.generating = False; self.root.after(0, self._on_finish)
+            self._generation_events.put(("done", out, None))
+        except Exception as e:
+            log_path = os.path.join(APP_DIR, "generation_error.log")
+            try:
+                with open(log_path, "a", encoding="utf-8") as handle:
+                    handle.write(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] {e}\n")
+                    handle.write(traceback.format_exc())
+            except OSError:
+                log_path = ""
+            detail = str(e) or type(e).__name__
+            if log_path:
+                detail += f"\n\n错误日志：{log_path}"
+            self._generation_events.put(("failed", detail, None))
 
     def _on_done(self, path):
         self.set_info("Done!", "success")

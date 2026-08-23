@@ -73,6 +73,13 @@ class FakeErrorResponse:
         return {"error": self.text}
 
 
+class FakeMalformedToolResponse:
+    status_code = 200
+
+    def json(self):
+        return {"result": "provider ignored the OpenAI response schema"}
+
+
 class AIClientTests(unittest.TestCase):
     def test_custom_provider_uses_supplied_url_and_model(self):
         client = create_chat_client(
@@ -199,6 +206,20 @@ class AIClientTests(unittest.TestCase):
             "{}",
         )
 
+        self.assertFalse(client._tool_support)
+        self.assertEqual(post.call_count, 2)
+
+    @patch("ai_clients.requests.post", side_effect=[FakeMalformedToolResponse(), FakeChatResponse()])
+    def test_malformed_tool_response_falls_back_to_plain_chat(self, post):
+        client = GenericOpenAIClient("secret", "https://example.test/chat", "model")
+
+        content, truncated = client.chat_with_tools(
+            [{"role": "user", "content": "generate"}],
+            [{"type": "function", "function": {"name": "search_items", "parameters": {}}}],
+            lambda *_: "[]",
+        )
+
+        self.assertEqual((content, truncated), ("{}", False))
         self.assertFalse(client._tool_support)
         self.assertEqual(post.call_count, 2)
 

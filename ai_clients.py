@@ -156,22 +156,32 @@ class GenericOpenAIClient:
                     marker in str(exc)
                     for marker in ("HTTP 400", "HTTP 403", "HTTP 404", "HTTP 422")
                 )
-                if self._tool_support is None and unsupported:
+                if unsupported:
                     self._tool_support = False
                     return self.chat(messages, temperature, max_tokens)
                 raise
             choices = body.get("choices")
             if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
-                raise ValueError("API 返回值缺少 choices[0]")
+                self._tool_support = False
+                return self.chat(messages, temperature, max_tokens)
             message = choices[0].get("message")
             if not isinstance(message, dict):
-                raise ValueError("API 返回值缺少 choices[0].message")
+                self._tool_support = False
+                return self.chat(messages, temperature, max_tokens)
             tool_calls = message.get("tool_calls")
             if not isinstance(tool_calls, list) or not tool_calls:
+                try:
+                    result = _response_content(body)
+                except (TypeError, ValueError):
+                    self._tool_support = False
+                    return self.chat(messages, temperature, max_tokens)
                 self._tool_support = True
-                return _response_content(body)
+                return result
             self._tool_support = True
-            bounded_calls = tool_calls[:6]
+            bounded_calls = [call for call in tool_calls if isinstance(call, dict)][:6]
+            if not bounded_calls:
+                self._tool_support = False
+                return self.chat(messages, temperature, max_tokens)
             bounded_message = dict(message)
             bounded_message.setdefault("role", "assistant")
             bounded_message["tool_calls"] = bounded_calls

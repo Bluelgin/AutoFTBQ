@@ -39,7 +39,11 @@ def _instance_paths(selected_path: str) -> tuple[str, str]:
 def _version_metadata(root: str) -> tuple[str, str]:
     minecraft_version = ""
     loader = ""
-    for filename in sorted(os.listdir(root)) if os.path.isdir(root) else []:
+    try:
+        filenames = sorted(os.listdir(root)) if os.path.isdir(root) else []
+    except OSError:
+        filenames = []
+    for filename in filenames:
         if not filename.lower().endswith(".json"):
             continue
         path = os.path.join(root, filename)
@@ -51,7 +55,8 @@ def _version_metadata(root: str) -> tuple[str, str]:
         if not isinstance(payload, dict):
             continue
         serialized = json.dumps(payload, ensure_ascii=True).lower()
-        arguments = payload.get("arguments", {}).get("game", [])
+        arguments_block = payload.get("arguments")
+        arguments = arguments_block.get("game", []) if isinstance(arguments_block, dict) else []
         if isinstance(arguments, list):
             for index, value in enumerate(arguments[:-1]):
                 if value == "--fml.mcVersion":
@@ -78,7 +83,11 @@ def _version_metadata(root: str) -> tuple[str, str]:
 def _ftb_quests_version(mods_dir: str) -> str:
     if not os.path.isdir(mods_dir):
         return ""
-    for filename in sorted(os.listdir(mods_dir)):
+    try:
+        filenames = sorted(os.listdir(mods_dir))
+    except OSError:
+        return ""
+    for filename in filenames:
         lower = filename.lower()
         if "ftb-quests" not in lower and "ftbquests" not in lower:
             continue

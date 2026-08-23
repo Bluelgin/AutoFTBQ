@@ -34,6 +34,19 @@ class InstanceResolverTests(unittest.TestCase):
         ):
             self.assertEqual(application_dir(r"C:\Temp\_MEI123"), r"C:\Apps")
 
+    def test_nonstandard_arguments_do_not_block_instance_detection(self):
+        for arguments in (None, [], "legacy"):
+            with self.subTest(arguments=arguments), tempfile.TemporaryDirectory() as root:
+                mods = os.path.join(root, "mods")
+                os.makedirs(mods)
+                with open(os.path.join(root, "Pack.json"), "w", encoding="utf-8") as handle:
+                    json.dump({"id": "forge-1.12.2", "arguments": arguments}, handle)
+
+                info = resolve_instance(mods)
+
+                self.assertIsNotNone(info)
+                self.assertEqual(info.minecraft_version, "1.12.2")
+
 
 if __name__ == "__main__":
     unittest.main()
