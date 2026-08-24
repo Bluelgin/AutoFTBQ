@@ -75,13 +75,57 @@ class AgentThread(QThread):
 
 
 class QuestCanvas(QGraphicsView):
+    def __init__(self, scene, parent=None):
+        super().__init__(scene, parent)
+        self._panning = False
+        self._pan_start = None
+        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
+
     def wheelEvent(self, event):
-        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
-            factor = 1.18 if event.angleDelta().y() > 0 else 1 / 1.18
+        current = self.transform().m11()
+        factor = 1.16 if event.angleDelta().y() > 0 else 1 / 1.16
+        target = current * factor
+        if 0.08 <= target <= 6.0:
             self.scale(factor, factor)
+        event.accept()
+
+    @staticmethod
+    def _quest_node(item):
+        while item is not None:
+            if isinstance(item, QuestNode):
+                return item
+            item = item.parentItem()
+        return None
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self._quest_node(self.itemAt(event.position().toPoint())) is None:
+            self._panning = True
+            self._pan_start = event.position().toPoint()
+            self.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
             event.accept()
             return
-        super().wheelEvent(event)
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._panning and self._pan_start is not None:
+            current = event.position().toPoint()
+            delta = current - self._pan_start
+            self._pan_start = current
+            self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - delta.x())
+            self.verticalScrollBar().setValue(self.verticalScrollBar().value() - delta.y())
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self._panning and event.button() == Qt.MouseButton.LeftButton:
+            self._panning = False
+            self._pan_start = None
+            self.viewport().unsetCursor()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
 
 class QuestNode(QGraphicsRectItem):
@@ -454,7 +498,7 @@ class MainWindow(QMainWindow):
         self.chapter_heading = QLabel("章节画布")
         self.chapter_heading.setObjectName("sectionTitle")
         toolbar.addWidget(self.chapter_heading)
-        self.connection_hint = QLabel("普通选择模式")
+        self.connection_hint = QLabel("空白处拖动画布 · 滚轮缩放")
         self.connection_hint.setObjectName("mainMuted")
         toolbar.addWidget(self.connection_hint)
         toolbar.addStretch()
@@ -489,7 +533,7 @@ class MainWindow(QMainWindow):
         self.canvas = QuestCanvas(self.scene)
         self.canvas.setObjectName("canvas")
         self.canvas.setRenderHint(QPainter.RenderHint.Antialiasing)
-        self.canvas.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
+        self.canvas.setDragMode(QGraphicsView.DragMode.NoDrag)
         layout.addWidget(self.canvas, 3)
 
         self.editor_tabs = QTabWidget()
@@ -502,6 +546,7 @@ class MainWindow(QMainWindow):
 
     def _build_inspector(self):
         panel = QWidget()
+        panel.setObjectName("inspectorPanel")
         form = QFormLayout(panel)
         form.setContentsMargins(18, 16, 18, 16)
         self.quest_title = QLineEdit()
@@ -539,6 +584,7 @@ class MainWindow(QMainWindow):
 
     def _build_raw_panel(self):
         panel = QWidget()
+        panel.setObjectName("rawPanel")
         layout = QHBoxLayout(panel)
         tasks_column = QVBoxLayout()
         tasks_column.addWidget(QLabel("任务条件 SNBT（完整列表）"))
@@ -659,8 +705,12 @@ class MainWindow(QMainWindow):
             QListWidget::item:selected { background: #d4e8df; color: #164f40; }
             #canvas { background: #e7e3da; border: 1px solid #d3cec2; border-radius: 12px; }
             QTabWidget::pane { border: 1px solid #d3cec2; border-radius: 8px; background: #f9f7f1; }
-            QTabBar::tab { padding: 7px 15px; color: #687068; }
-            QTabBar::tab:selected { color: #1f7059; font-weight: 700; }
+            QTabBar::tab { background: #e8e4db; border: 1px solid #cbc6bb; padding: 8px 16px; color: #4f5952; }
+            QTabBar::tab:selected { background: #fbfaf6; color: #17664f; font-weight: 700; }
+            #inspectorPanel, #rawPanel { background: #f9f7f1; color: #27302b; }
+            #inspectorPanel QLabel, #rawPanel QLabel { color: #303a34; font-weight: 600; }
+            #inspectorPanel QLineEdit, #inspectorPanel QTextEdit, #inspectorPanel QSpinBox,
+            #rawPanel QTextEdit { background: #fffefb; color: #202722; border: 1px solid #cfc9bd; }
             #statusPill { background: #dce9e3; color: #28634f; border-radius: 10px; padding: 5px 11px; }
             #chat { background: #fbfaf6; color: #27302b; border: none; }
             #actionList { background: #f0ede5; color: #59635d; border: 1px solid #ded9ce; }
@@ -746,8 +796,6 @@ class MainWindow(QMainWindow):
                 line.setZValue(-1)
                 self.scene.addItem(line)
         self.scene.setSceneRect(self.scene.itemsBoundingRect().adjusted(-40, -40, 80, 80))
-        if getattr(self.store, "is_real", False) and self.scene.items():
-            self.canvas.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
 
     def _node_moved(self, quest_id: str, position):
         if not getattr(self.store, "is_real", False):
@@ -760,7 +808,7 @@ class MainWindow(QMainWindow):
         if found[1].x == x and found[1].y == y:
             return
         self.store.move_quest(quest_id, x, y)
-        self.append_action("move_quest", f"{quest_id} -> ({x}, {y})")
+        self.append_action("move_quest", f"{quest_id} -> ({x}, {y})", refresh=False)
 
     def fit_canvas(self):
         if self.scene.items():
@@ -772,6 +820,7 @@ class MainWindow(QMainWindow):
             self.current_quest_id = ""
             self.switch_view(1)
             self.refresh_canvas()
+            self.fit_canvas()
             self.clear_inspector()
 
     def select_canvas_quest(self):
@@ -789,7 +838,7 @@ class MainWindow(QMainWindow):
         self.connect_mode = enabled
         self.connection_source_id = ""
         self.scene.clearSelection()
-        self.connection_hint.setText("先点击前置任务 A" if enabled else "普通选择模式")
+        self.connection_hint.setText("先点击前置任务 A" if enabled else "空白处拖动画布 · 滚轮缩放")
 
     def _handle_connection_click(self, quest):
         if not self.connection_source_id:
@@ -989,6 +1038,7 @@ class MainWindow(QMainWindow):
             self.agent = None
             self.append_action("scan_modpack", f"{total} items")
             self.refresh_all()
+            self.fit_canvas()
         except Exception as exc:
             QMessageBox.critical(self, "扫描失败", str(exc))
         finally:
@@ -1081,7 +1131,7 @@ class MainWindow(QMainWindow):
         if thread:
             thread.deleteLater()
 
-    def append_action(self, name, detail):
+    def append_action(self, name, detail, refresh=True):
         labels = {
             "get_project_summary": "读取项目",
             "get_chapter_quests": "读取章节任务",
@@ -1102,7 +1152,7 @@ class MainWindow(QMainWindow):
             "scan_modpack": "扫描整合包",
         }
         self.action_list.insertItem(0, f"{labels.get(name, name)}  {detail[:90]}")
-        if name in {
+        if refresh and name in {
             "create_chapter", "add_quest", "update_quest", "replace_quest_sections",
             "move_quest", "connect_quests", "disconnect_quests", "remove_quest",
         }:
