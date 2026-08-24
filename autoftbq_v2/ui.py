@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSpinBox,
+    QStackedWidget,
     QSplitter,
     QTabWidget,
     QTextBrowser,
@@ -145,15 +146,170 @@ class MainWindow(QMainWindow):
         root_layout = QHBoxLayout(root)
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(0)
-        root_layout.addWidget(self._build_rail())
-
-        self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
-        self.main_splitter.setChildrenCollapsible(False)
-        self.main_splitter.addWidget(self._build_workspace())
-        self.main_splitter.addWidget(self._build_agent_panel())
-        self.main_splitter.setSizes([980, 480])
-        root_layout.addWidget(self.main_splitter, 1)
+        root_layout.addWidget(self._build_sidebar())
+        root_layout.addWidget(self._build_main_area(), 1)
         self.setCentralWidget(root)
+
+    def _build_sidebar(self):
+        sidebar = QFrame()
+        sidebar.setObjectName("sidebar")
+        sidebar.setFixedWidth(300)
+        layout = QVBoxLayout(sidebar)
+        layout.setContentsMargins(20, 22, 20, 18)
+        layout.setSpacing(12)
+
+        brand_row = QHBoxLayout()
+        logo = QLabel("A2")
+        logo.setObjectName("logo")
+        logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        logo.setFixedSize(42, 42)
+        brand = QVBoxLayout()
+        name = QLabel("AutoFTBQ")
+        name.setObjectName("brandName")
+        branch = QLabel("v2 Agent Workspace")
+        branch.setObjectName("sidebarMuted")
+        brand.addWidget(name)
+        brand.addWidget(branch)
+        brand_row.addWidget(logo)
+        brand_row.addLayout(brand)
+        brand_row.addStretch()
+        layout.addLayout(brand_row)
+
+        self.project_title = QLineEdit()
+        self.project_title.setObjectName("sidebarProjectTitle")
+        self.project_title.editingFinished.connect(self.save_project_title)
+        layout.addWidget(self.project_title)
+
+        project_buttons = QHBoxLayout()
+        for text, callback in (("新建", self.new_project), ("打开", self.open_project), ("保存", self.save_project)):
+            button = QPushButton(text)
+            button.clicked.connect(callback)
+            project_buttons.addWidget(button)
+        layout.addLayout(project_buttons)
+
+        nav_label = QLabel("功能区")
+        nav_label.setObjectName("sidebarLabel")
+        layout.addWidget(nav_label)
+        self.nav_buttons = []
+        for text, detail, callback in (
+            ("Agent 对话", "查看思考结果与行动记录", lambda: self.switch_view(0)),
+            ("任务书编辑器", "节点、连线与任务属性", lambda: self.switch_view(1)),
+            ("扫描整合包", "建立物品与配方索引", self.scan_modpack),
+            ("检查任务书", "定位结构和 ID 问题", self.show_validation),
+            ("导出 SNBT", "写入 FTB Quests 目录", self.export_snbt),
+        ):
+            button = QPushButton(f"{text}\n{detail}")
+            button.setObjectName("navButton")
+            button.setProperty("viewButton", callback.__name__ == "<lambda>")
+            button.clicked.connect(callback)
+            layout.addWidget(button)
+            self.nav_buttons.append(button)
+
+        chapter_row = QHBoxLayout()
+        chapter_label = QLabel("章节")
+        chapter_label.setObjectName("sidebarLabel")
+        add = QPushButton("+")
+        add.setFixedWidth(34)
+        add.clicked.connect(self.add_chapter)
+        chapter_row.addWidget(chapter_label)
+        chapter_row.addStretch()
+        chapter_row.addWidget(add)
+        layout.addLayout(chapter_row)
+        self.chapter_list = QListWidget()
+        self.chapter_list.setObjectName("sidebarChapters")
+        self.chapter_list.currentItemChanged.connect(self.select_chapter)
+        layout.addWidget(self.chapter_list, 1)
+        self.modpack_status = QLabel("尚未扫描整合包")
+        self.modpack_status.setWordWrap(True)
+        self.modpack_status.setObjectName("sidebarMuted")
+        layout.addWidget(self.modpack_status)
+        return sidebar
+
+    def _build_main_area(self):
+        panel = QFrame()
+        panel.setObjectName("mainArea")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(28, 22, 28, 22)
+        layout.setSpacing(14)
+
+        header = QHBoxLayout()
+        titles = QVBoxLayout()
+        eyebrow = QLabel("ACTIVE WORKSPACE")
+        eyebrow.setObjectName("eyebrow")
+        self.view_title = QLabel("与 Agent 一起制作任务书")
+        self.view_title.setObjectName("viewTitle")
+        titles.addWidget(eyebrow)
+        titles.addWidget(self.view_title)
+        header.addLayout(titles)
+        header.addStretch()
+        self.model_label = QLabel("读取 1.x API 配置 · 白名单工具模式")
+        self.model_label.setObjectName("mainMuted")
+        self.agent_state = QLabel("待命")
+        self.agent_state.setObjectName("statusPill")
+        header.addWidget(self.model_label)
+        header.addWidget(self.agent_state)
+        layout.addLayout(header)
+
+        self.view_stack = QStackedWidget()
+        self.view_stack.addWidget(self._build_conversation_view())
+        self.view_stack.addWidget(self._build_editor())
+        layout.addWidget(self.view_stack, 1)
+        layout.addWidget(self._build_composer())
+        self.switch_view(0)
+        return panel
+
+    def _build_conversation_view(self):
+        page = QFrame()
+        page.setObjectName("conversationCard")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(18, 18, 18, 16)
+        layout.setSpacing(10)
+        self.chat = QTextBrowser()
+        self.chat.setObjectName("chat")
+        self.chat.setOpenExternalLinks(True)
+        layout.addWidget(self.chat, 1)
+        self.append_chat("agent", "我是项目 Agent。先扫描整合包，然后告诉我想制作什么；我的每一步操作都会显示在行动记录中。")
+        action_row = QHBoxLayout()
+        action_title = QLabel("行动记录")
+        action_title.setObjectName("sectionTitle")
+        action_hint = QLabel("这里显示 Agent 实际调用的工具，而不是隐藏的提示词")
+        action_hint.setObjectName("mainMuted")
+        action_row.addWidget(action_title)
+        action_row.addWidget(action_hint)
+        action_row.addStretch()
+        layout.addLayout(action_row)
+        self.action_list = QListWidget()
+        self.action_list.setObjectName("actionList")
+        self.action_list.setMaximumHeight(170)
+        layout.addWidget(self.action_list)
+        return page
+
+    def _build_composer(self):
+        composer = QFrame()
+        composer.setObjectName("composer")
+        layout = QVBoxLayout(composer)
+        layout.setContentsMargins(16, 13, 16, 12)
+        self.prompt = QTextEdit()
+        self.prompt.setObjectName("prompt")
+        self.prompt.setPlaceholderText("描述你想要的结果。Agent 会根据当前视图选择合适工具，例如查询物品、修改任务或运行检查。")
+        self.prompt.setMaximumHeight(92)
+        layout.addWidget(self.prompt)
+        row = QHBoxLayout()
+        self.prompt_mode = QLabel("自动选择工具")
+        self.prompt_mode.setObjectName("modePill")
+        hint = QLabel("Ctrl + Enter 发送")
+        hint.setObjectName("mainMuted")
+        self.send_button = QPushButton("交给 Agent")
+        self.send_button.setObjectName("agentButton")
+        self.send_button.clicked.connect(self.send_to_agent)
+        row.addWidget(self.prompt_mode)
+        row.addWidget(hint)
+        row.addStretch()
+        row.addWidget(self.send_button)
+        layout.addLayout(row)
+        self.send_shortcut = QShortcut(QKeySequence("Ctrl+Return"), self)
+        self.send_shortcut.activated.connect(self.send_to_agent)
+        return composer
 
     def _build_rail(self):
         rail = QFrame()
@@ -270,10 +426,10 @@ class MainWindow(QMainWindow):
         self.canvas.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
         layout.addWidget(self.canvas, 3)
 
-        tabs = QTabWidget()
-        tabs.addTab(self._build_inspector(), "任务属性")
-        tabs.addTab(self._build_validation_panel(), "检查结果")
-        layout.addWidget(tabs, 2)
+        self.editor_tabs = QTabWidget()
+        self.editor_tabs.addTab(self._build_inspector(), "任务属性")
+        self.editor_tabs.addTab(self._build_validation_panel(), "检查结果")
+        layout.addWidget(self.editor_tabs, 2)
         return frame
 
     def _build_inspector(self):
@@ -377,17 +533,25 @@ class MainWindow(QMainWindow):
     def _apply_style(self):
         self.setStyleSheet("""
             * { font-family: 'Microsoft YaHei UI'; font-size: 13px; }
-            QMainWindow, #workspace { background: #f3f0e8; color: #202520; }
-            #rail { background: #1e2925; border: none; }
-            #logo { background: #d7f05c; color: #1e2925; border-radius: 18px; font-size: 16px; font-weight: 800; min-height: 36px; }
-            #rail QToolButton { color: #cbd6d0; border: none; border-radius: 12px; min-height: 46px; font-size: 17px; }
-            #rail QToolButton:hover { background: #31423b; color: white; }
-            #railVersion { color: #71817a; font-size: 10px; }
-            #eyebrow { color: #788178; font-size: 10px; font-weight: 700; letter-spacing: 2px; }
-            #projectTitle { background: transparent; border: none; font-size: 25px; font-weight: 700; padding: 0; }
-            #sectionTitle, #agentTitle { font-size: 17px; font-weight: 700; }
-            #sideCard { background: #e8e4da; border: 1px solid #d7d1c4; border-radius: 14px; }
-            #muted { color: #7d857d; font-size: 11px; }
+            QMainWindow, #mainArea { background: #f3f1eb; color: #202520; }
+            #sidebar { background: #1d2824; color: #edf2ef; border: none; }
+            #logo { background: #d7f05c; color: #1e2925; border-radius: 13px; font-size: 16px; font-weight: 800; }
+            #brandName { color: white; font-size: 18px; font-weight: 800; }
+            #sidebarMuted { color: #899b93; font-size: 10px; }
+            #sidebarLabel { color: #a9b7b0; font-size: 11px; font-weight: 700; margin-top: 8px; }
+            #sidebarProjectTitle { background: #283630; color: white; border: 1px solid #3b4a44; font-size: 16px; font-weight: 700; padding: 9px; }
+            #sidebar QPushButton { background: #283630; color: #dce5e0; border: 1px solid #3b4a44; }
+            #sidebar QPushButton:hover { background: #34453e; border-color: #647c71; }
+            #navButton { text-align: left; min-height: 45px; padding: 9px 12px; font-weight: 600; }
+            #sidebarChapters { background: #202d28; color: #dce5e0; border: 1px solid #34443d; }
+            #sidebarChapters::item:selected { background: #3b5148; color: white; }
+            #eyebrow { color: #7b847c; font-size: 10px; font-weight: 700; letter-spacing: 2px; }
+            #viewTitle { color: #202520; font-size: 24px; font-weight: 800; }
+            #mainMuted { color: #78827a; font-size: 10px; }
+            #sectionTitle { font-size: 16px; font-weight: 700; }
+            #conversationCard { background: #fbfaf6; border: 1px solid #d7d2c7; border-radius: 15px; }
+            #composer { background: #fbfaf6; border: 1px solid #cfc9bd; border-radius: 15px; }
+            #modePill { background: #e2eee8; color: #25644f; border-radius: 9px; padding: 4px 9px; font-size: 10px; }
             QPushButton { background: #faf8f2; color: #303730; border: 1px solid #d3cec3; border-radius: 8px; padding: 7px 12px; }
             QPushButton:hover { border-color: #778f82; background: white; }
             #primaryButton { background: #1f7059; color: white; border: none; }
@@ -399,16 +563,30 @@ class MainWindow(QMainWindow):
             QTabWidget::pane { border: 1px solid #d3cec2; border-radius: 8px; background: #f9f7f1; }
             QTabBar::tab { padding: 7px 15px; color: #687068; }
             QTabBar::tab:selected { color: #1f7059; font-weight: 700; }
-            #agentPanel { background: #1d2522; color: #eef2ef; }
-            #agentTitle { color: white; font-size: 23px; }
-            #statusPill { background: #31433c; color: #bfe8d6; border-radius: 10px; padding: 4px 10px; }
-            #agentMuted { color: #8fa098; font-size: 11px; }
-            #chat, #actionList, #prompt { background: #26312d; color: #e8eeea; border: 1px solid #394740; }
-            #actionList::item { color: #b8c7c0; border-bottom: 1px solid #34413c; }
-            #sectionTitleLight { color: #dce4df; font-weight: 700; }
+            #statusPill { background: #dce9e3; color: #28634f; border-radius: 10px; padding: 5px 11px; }
+            #chat { background: #fbfaf6; color: #27302b; border: none; }
+            #actionList { background: #f0ede5; color: #59635d; border: 1px solid #ded9ce; }
+            #actionList::item { border-bottom: 1px solid #ded9ce; }
+            #prompt { background: transparent; color: #252c28; border: none; font-size: 14px; }
             #agentButton { background: #d7f05c; color: #1c251f; border: none; font-weight: 800; padding: 9px 18px; }
             QSplitter::handle { background: transparent; width: 5px; }
         """)
+
+    def switch_view(self, index: int):
+        if not hasattr(self, "view_stack"):
+            return
+        self.view_stack.setCurrentIndex(index)
+        self.view_title.setText("与 Agent 一起制作任务书" if index == 0 else "任务书编辑器")
+        for button_index, button in enumerate(self.nav_buttons[:2]):
+            button.setStyleSheet(
+                "background:#40564d;border-color:#6b8378;color:white;"
+                if button_index == index else ""
+            )
+
+    def show_validation(self):
+        self.switch_view(1)
+        self.editor_tabs.setCurrentIndex(1)
+        self.run_validation()
 
     def refresh_all(self):
         self.project_title.setText(self.store.project.title)
@@ -461,6 +639,7 @@ class MainWindow(QMainWindow):
         if current:
             self.current_chapter_id = current.data(Qt.ItemDataRole.UserRole)
             self.current_quest_id = ""
+            self.switch_view(1)
             self.refresh_canvas()
             self.clear_inspector()
 
@@ -692,11 +871,11 @@ class MainWindow(QMainWindow):
     def append_chat(self, role, text):
         safe = escape(str(text)).replace("\n", "<br>")
         if role == "user":
-            block = f"<div style='margin:12px 0 12px 45px;padding:11px;background:#3a4943;border-radius:10px'><b>你</b><br>{safe}</div>"
+            block = f"<div style='margin:12px 0 12px 45px;padding:11px;background:#26352f;color:#f3f6f4;border-radius:10px'><b>你</b><br>{safe}</div>"
         elif role == "error":
-            block = f"<div style='margin:12px 35px 12px 0;padding:11px;background:#563832;border-radius:10px'><b>Agent 出错</b><br>{safe}</div>"
+            block = f"<div style='margin:12px 35px 12px 0;padding:11px;background:#f4dfd9;color:#712f25;border-radius:10px'><b>Agent 出错</b><br>{safe}</div>"
         else:
-            block = f"<div style='margin:12px 35px 12px 0;padding:11px;background:#2d3a35;border-radius:10px'><b style='color:#d7f05c'>Agent</b><br>{safe}</div>"
+            block = f"<div style='margin:12px 35px 12px 0;padding:11px;background:#e5eee9;color:#26322c;border-radius:10px'><b style='color:#1d7057'>Agent</b><br>{safe}</div>"
         self.chat.append(block)
         self.chat.verticalScrollBar().setValue(self.chat.verticalScrollBar().maximum())
 
