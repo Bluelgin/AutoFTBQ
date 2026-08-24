@@ -56,6 +56,9 @@ class ProjectAgent:
 
         return [
             spec("get_project_summary", "Inspect chapters and quest counts.", {}),
+            spec("get_chapter_quests", "Inspect quest IDs, titles, coordinates and dependencies in one chapter.", {
+                "chapter_id": {"type": "string"},
+            }, ("chapter_id",)),
             spec("list_skills", "List built-in quest-authoring skills and their triggers.", {}),
             spec("load_skill", "Load one relevant built-in workflow before planning or repairing.", {
                 "skill_id": {"type": "string"},
@@ -71,12 +74,31 @@ class ProjectAgent:
             }, ("chapter_id", "title", "task_type")),
             spec("update_quest", "Update one existing quest.", {
                 "quest_id": {"type": "string"}, "title": {"type": "string"},
-                "description": {"type": "string"}, "task_type": {"type": "string"},
+                "subtitle": {"type": "string"}, "icon": {"type": "string"},
+                "description": {"type": "string"},
+                "shape": {"type": "string"}, "task_type": {"type": "string"},
                 "target": {"type": "string"}, "count": {"type": "integer"},
             }, ("quest_id",)),
+            spec("get_quest_sections", "Read the complete tasks and rewards of one real quest before advanced editing.", {
+                "quest_id": {"type": "string"},
+            }, ("quest_id",)),
+            spec("replace_quest_sections", "Replace complete task and/or reward lists after inspecting them. Changes remain undoable.", {
+                "quest_id": {"type": "string"},
+                "tasks": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
+                "rewards": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
+            }, ("quest_id",)),
+            spec("move_quest", "Move a quest to exact FTB canvas coordinates.", {
+                "quest_id": {"type": "string"}, "x": {"type": "number"}, "y": {"type": "number"},
+            }, ("quest_id", "x", "y")),
             spec("connect_quests", "Make a quest depend on another quest.", {
                 "quest_id": {"type": "string"}, "dependency_id": {"type": "string"},
             }, ("quest_id", "dependency_id")),
+            spec("disconnect_quests", "Remove one dependency from a quest.", {
+                "quest_id": {"type": "string"}, "dependency_id": {"type": "string"},
+            }, ("quest_id", "dependency_id")),
+            spec("remove_quest", "Remove one quest. This is undoable until the app closes.", {
+                "quest_id": {"type": "string"},
+            }, ("quest_id",)),
             spec("search_items", "Search real item IDs scanned from this modpack.", {
                 "namespace": {"type": "string"}, "query": {"type": "string"},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 30},
@@ -95,6 +117,16 @@ class ProjectAgent:
         arguments = arguments if isinstance(arguments, dict) else {}
         if name == "get_project_summary":
             result = self.store.summary()
+        elif name == "get_chapter_quests":
+            chapter = self.store.chapter(arguments.get("chapter_id", ""))
+            result = {"error": "章节不存在"} if chapter is None else [
+                {
+                    "quest_id": quest.id, "title": quest.title, "x": quest.x, "y": quest.y,
+                    "shape": quest.shape, "dependencies": quest.dependencies,
+                    "tasks": [{"type": task.type, "target": task.target, "count": task.count} for task in quest.tasks],
+                }
+                for quest in chapter.quests
+            ]
         elif name == "list_skills":
             result = self.skills.catalog()
         elif name == "load_skill":
@@ -113,9 +145,43 @@ class ProjectAgent:
             changes = {key: value for key, value in arguments.items() if key != "quest_id"}
             quest = self.store.update_quest(arguments.get("quest_id", ""), **changes)
             result = {"quest_id": quest.id, "title": quest.title}
+        elif name == "get_quest_sections":
+            quest_id = arguments.get("quest_id", "")
+            if hasattr(self.store, "raw_sections"):
+                tasks, rewards = self.store.raw_sections(quest_id)
+                result = {"quest_id": quest_id, "tasks": tasks, "rewards": rewards}
+            else:
+                found = self.store.quest(quest_id)
+                result = {"error": "任务不存在"} if found is None else {
+                    "quest_id": quest_id,
+                    "tasks": [task.__dict__ for task in found[1].tasks],
+                    "rewards": found[1].rewards,
+                }
+        elif name == "replace_quest_sections":
+            quest_id = arguments.get("quest_id", "")
+            if not hasattr(self.store, "replace_quest_sections"):
+                result = {"error": "请先打开真实 FTB Quests 任务书"}
+            else:
+                old_tasks, old_rewards = self.store.raw_sections(quest_id)
+                quest = self.store.replace_quest_sections(
+                    quest_id,
+                    arguments.get("tasks", old_tasks),
+                    arguments.get("rewards", old_rewards),
+                )
+                result = {"quest_id": quest.id, "tasks": len(quest.tasks), "rewards": len(quest.rewards)}
+        elif name == "move_quest":
+            quest = self.store.move_quest(
+                arguments.get("quest_id", ""), arguments.get("x", 0), arguments.get("y", 0)
+            )
+            result = {"quest_id": quest.id, "x": quest.x, "y": quest.y}
         elif name == "connect_quests":
             quest = self.store.connect(arguments.get("quest_id", ""), arguments.get("dependency_id", ""))
             result = {"quest_id": quest.id, "dependencies": quest.dependencies}
+        elif name == "disconnect_quests":
+            quest = self.store.disconnect(arguments.get("quest_id", ""), arguments.get("dependency_id", ""))
+            result = {"quest_id": quest.id, "dependencies": quest.dependencies}
+        elif name == "remove_quest":
+            result = {"removed": self.store.remove_quest(arguments.get("quest_id", ""))}
         elif name == "search_items":
             result = self.toolbox.search_items(
                 arguments.get("namespace", ""), arguments.get("query", ""), arguments.get("limit", 20),

@@ -23,6 +23,8 @@ class Task:
 class Quest:
     id: str = field(default_factory=lambda: new_id("quest"))
     title: str = "新任务"
+    subtitle: str = ""
+    icon: str = ""
     description: list[str] = field(default_factory=list)
     tasks: list[Task] = field(default_factory=lambda: [Task()])
     rewards: list[dict] = field(default_factory=list)
@@ -86,6 +88,8 @@ class QuestBookProject:
                 quests.append(Quest(
                     id=str(raw_quest.get("id") or new_id("quest")),
                     title=str(raw_quest.get("title") or "新任务"),
+                    subtitle=str(raw_quest.get("subtitle") or ""),
+                    icon=str(raw_quest.get("icon") or ""),
                     description=[str(line) for line in raw_quest.get("description", [])]
                     if isinstance(raw_quest.get("description"), list)
                     else [str(raw_quest.get("description", ""))],
@@ -199,6 +203,12 @@ class ProjectStore:
         self._checkpoint()
         if "title" in changes:
             quest.title = str(changes["title"]).strip() or quest.title
+        if "subtitle" in changes:
+            quest.subtitle = str(changes["subtitle"]).strip()
+        if "icon" in changes:
+            quest.icon = str(changes["icon"]).strip()
+        if "shape" in changes:
+            quest.shape = str(changes["shape"]).strip() or quest.shape
         if "description" in changes:
             value = str(changes["description"]).strip()
             quest.description = [value] if value else []
@@ -211,6 +221,15 @@ class ProjectStore:
             task.count = max(1, int(changes["count"] or 1))
         quest.tasks = [task]
         return quest
+
+    def move_quest(self, quest_id: str, x: float, y: float) -> Quest:
+        found = self.quest(quest_id)
+        if found is None:
+            raise ValueError(f"找不到任务：{quest_id}")
+        self._checkpoint()
+        found[1].x = float(x)
+        found[1].y = float(y)
+        return found[1]
 
     def remove_quest(self, quest_id: str) -> bool:
         found = self.quest(quest_id)
@@ -237,6 +256,15 @@ class ProjectStore:
         if dependency_id not in found[1].dependencies:
             self._checkpoint()
             found[1].dependencies.append(dependency_id)
+        return found[1]
+
+    def disconnect(self, quest_id: str, dependency_id: str) -> Quest:
+        found = self.quest(quest_id)
+        if found is None:
+            raise ValueError("任务不存在")
+        if dependency_id in found[1].dependencies:
+            self._checkpoint()
+            found[1].dependencies.remove(dependency_id)
         return found[1]
 
     def _depends_on(self, quest_id: str, dependency_id: str) -> bool:

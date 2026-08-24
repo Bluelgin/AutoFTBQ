@@ -40,9 +40,11 @@ from ai_clients import create_chat_client
 from ai_module import import_json_to_snbt
 import mod_scanner
 from quest_tools import QuestToolbox
+from snbt_parser import parse_snbt, to_snbt
 
 from .agent import ProjectAgent
 from .asset_index import AssetIndex
+from .ftb_store import FTBQuestStore, locate_quest_root
 from .project import ProjectStore, QuestBookProject
 
 
@@ -72,13 +74,24 @@ class AgentThread(QThread):
         self.action.emit(name, detail)
 
 
-class QuestNode(QGraphicsRectItem):
-    WIDTH = 190
-    HEIGHT = 82
+class QuestCanvas(QGraphicsView):
+    def wheelEvent(self, event):
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            factor = 1.18 if event.angleDelta().y() > 0 else 1 / 1.18
+            self.scale(factor, factor)
+            event.accept()
+            return
+        super().wheelEvent(event)
 
-    def __init__(self, quest, x: float, y: float, icon_path: str = ""):
+
+class QuestNode(QGraphicsRectItem):
+    WIDTH = 150
+    HEIGHT = 70
+
+    def __init__(self, quest, x: float, y: float, icon_path: str = "", on_move=None):
         super().__init__(0, 0, self.WIDTH, self.HEIGHT)
         self.quest = quest
+        self.on_move = on_move
         self.setData(0, quest.id)
         self.setPos(x, y)
         self.setFlag(QGraphicsRectItem.GraphicsItemFlag.ItemIsSelectable, True)
@@ -101,13 +114,14 @@ class QuestNode(QGraphicsRectItem):
                 from PySide6.QtWidgets import QGraphicsPixmapItem
 
                 self.icon_item = QGraphicsPixmapItem(
-                    pixmap.scaled(40, 40, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation),
+                    pixmap.scaled(34, 34, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation),
                     self,
                 )
-                self.icon_item.setPos(12, 20)
-                text_x = 62
-        self.title_item = self.scene_text(title, 13, True, QPointF(text_x, 12))
-        self.detail_item = self.scene_text(target or task_type, 9, False, QPointF(text_x, 44))
+                self.icon_item.setPos(10, 18)
+                text_x = 50
+        self.title_item = self.scene_text(title[:16], 11, True, QPointF(text_x, 10))
+        self.detail_item = self.scene_text((target or task_type)[:20], 8, False, QPointF(text_x, 39))
+        self.setToolTip(f"{quest.title}\n{target or task_type}\nID: {quest.id}")
 
     def scene_text(self, text, size, bold, pos):
         from PySide6.QtWidgets import QGraphicsSimpleTextItem
@@ -122,6 +136,11 @@ class QuestNode(QGraphicsRectItem):
         if change == QGraphicsRectItem.GraphicsItemChange.ItemSelectedChange:
             self.setPen(QPen(QColor("#19715a") if value else QColor("#a9a398"), 2.2 if value else 1.4))
         return super().itemChange(change, value)
+
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        if self.on_move:
+            self.on_move(self.quest.id, self.pos())
 
 
 class MainWindow(QMainWindow):
@@ -439,6 +458,14 @@ class MainWindow(QMainWindow):
         self.connection_hint.setObjectName("mainMuted")
         toolbar.addWidget(self.connection_hint)
         toolbar.addStretch()
+        zoom_out = QPushButton("-")
+        zoom_out.setFixedWidth(32)
+        zoom_out.clicked.connect(lambda: self.canvas.scale(1 / 1.2, 1 / 1.2))
+        zoom_in = QPushButton("+")
+        zoom_in.setFixedWidth(32)
+        zoom_in.clicked.connect(lambda: self.canvas.scale(1.2, 1.2))
+        fit = QPushButton("适应画布")
+        fit.clicked.connect(self.fit_canvas)
         self.connect_button = QPushButton("连线模式")
         self.connect_button.setCheckable(True)
         self.connect_button.toggled.connect(self.toggle_connect_mode)
@@ -448,6 +475,9 @@ class MainWindow(QMainWindow):
         undo.clicked.connect(self.undo)
         redo = QPushButton("重做")
         redo.clicked.connect(self.redo)
+        toolbar.addWidget(zoom_out)
+        toolbar.addWidget(zoom_in)
+        toolbar.addWidget(fit)
         toolbar.addWidget(self.connect_button)
         toolbar.addWidget(add)
         toolbar.addWidget(undo)
@@ -456,14 +486,16 @@ class MainWindow(QMainWindow):
 
         self.scene = QGraphicsScene(self)
         self.scene.selectionChanged.connect(self.select_canvas_quest)
-        self.canvas = QGraphicsView(self.scene)
+        self.canvas = QuestCanvas(self.scene)
         self.canvas.setObjectName("canvas")
         self.canvas.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.canvas.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
         layout.addWidget(self.canvas, 3)
 
         self.editor_tabs = QTabWidget()
+        self.editor_tabs.setMaximumHeight(330)
         self.editor_tabs.addTab(self._build_inspector(), "任务属性")
+        self.editor_tabs.addTab(self._build_raw_panel(), "任务与奖励 SNBT")
         self.editor_tabs.addTab(self._build_validation_panel(), "检查结果")
         layout.addWidget(self.editor_tabs, 2)
         return frame
@@ -473,13 +505,19 @@ class MainWindow(QMainWindow):
         form = QFormLayout(panel)
         form.setContentsMargins(18, 16, 18, 16)
         self.quest_title = QLineEdit()
+        self.quest_subtitle = QLineEdit()
+        self.quest_icon = QLineEdit()
         self.quest_type = QLineEdit()
         self.quest_target = QLineEdit()
         self.quest_count = QSpinBox()
         self.quest_count.setRange(1, 999999)
         self.quest_description = QTextEdit()
         self.quest_description.setMaximumHeight(76)
+        self.quest_shape = QLineEdit()
         form.addRow("标题", self.quest_title)
+        form.addRow("副标题", self.quest_subtitle)
+        form.addRow("任务图标", self.quest_icon)
+        form.addRow("节点形状", self.quest_shape)
         form.addRow("任务类型", self.quest_type)
         form.addRow("目标 ID", self.quest_target)
         form.addRow("数量", self.quest_count)
@@ -497,6 +535,27 @@ class MainWindow(QMainWindow):
         buttons.addWidget(remove)
         buttons.addStretch()
         form.addRow("", row)
+        return panel
+
+    def _build_raw_panel(self):
+        panel = QWidget()
+        layout = QHBoxLayout(panel)
+        tasks_column = QVBoxLayout()
+        tasks_column.addWidget(QLabel("任务条件 SNBT（完整列表）"))
+        self.quest_tasks_raw = QTextEdit()
+        self.quest_tasks_raw.setPlaceholderText("选择任务后显示原始 tasks 列表")
+        tasks_column.addWidget(self.quest_tasks_raw)
+        rewards_column = QVBoxLayout()
+        rewards_column.addWidget(QLabel("奖励 SNBT（完整列表）"))
+        self.quest_rewards_raw = QTextEdit()
+        self.quest_rewards_raw.setPlaceholderText("选择任务后显示原始 rewards 列表")
+        rewards_column.addWidget(self.quest_rewards_raw)
+        apply_raw = QPushButton("应用 SNBT 修改")
+        apply_raw.setObjectName("primaryButton")
+        apply_raw.clicked.connect(lambda: self.apply_quest_changes(True))
+        rewards_column.addWidget(apply_raw)
+        layout.addLayout(tasks_column, 1)
+        layout.addLayout(rewards_column, 1)
         return panel
 
     def _build_validation_panel(self):
@@ -626,7 +685,7 @@ class MainWindow(QMainWindow):
 
     def show_validation(self):
         self.switch_view(1)
-        self.editor_tabs.setCurrentIndex(1)
+        self.editor_tabs.setCurrentIndex(2)
         self.run_validation()
 
     def refresh_all(self):
@@ -655,14 +714,22 @@ class MainWindow(QMainWindow):
         self.chapter_heading.setText(chapter.title)
         nodes = {}
         for index, quest in enumerate(chapter.quests):
-            row = index // 4
-            offset = index % 4
-            column = offset if row % 2 == 0 else 3 - offset
-            x = column * 235
-            y = row * 125
+            if getattr(self.store, "is_real", False):
+                x = quest.x * 72
+                y = quest.y * 72
+            else:
+                row = index // 4
+                offset = index % 4
+                column = offset if row % 2 == 0 else 3 - offset
+                x = column * 235
+                y = row * 125
             task = quest.tasks[0] if quest.tasks else None
-            icon_path = self.asset_index.icon_for(task.target) if self.asset_index and task else ""
-            node = QuestNode(quest, x, y, icon_path)
+            icon_id = quest.icon or (task.target if task else "")
+            icon_path = self.asset_index.icon_for(icon_id) if self.asset_index else ""
+            node = QuestNode(
+                quest, x, y, icon_path,
+                self._node_moved if getattr(self.store, "is_real", False) else None,
+            )
             self.scene.addItem(node)
             nodes[quest.id] = node
         for quest in chapter.quests:
@@ -679,6 +746,25 @@ class MainWindow(QMainWindow):
                 line.setZValue(-1)
                 self.scene.addItem(line)
         self.scene.setSceneRect(self.scene.itemsBoundingRect().adjusted(-40, -40, 80, 80))
+        if getattr(self.store, "is_real", False) and self.scene.items():
+            self.canvas.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+
+    def _node_moved(self, quest_id: str, position):
+        if not getattr(self.store, "is_real", False):
+            return
+        found = self.store.quest(quest_id)
+        if found is None:
+            return
+        x = round(position.x() / 72, 2)
+        y = round(position.y() / 72, 2)
+        if found[1].x == x and found[1].y == y:
+            return
+        self.store.move_quest(quest_id, x, y)
+        self.append_action("move_quest", f"{quest_id} -> ({x}, {y})")
+
+    def fit_canvas(self):
+        if self.scene.items():
+            self.canvas.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
 
     def select_chapter(self, current, _previous):
         if current:
@@ -728,17 +814,35 @@ class MainWindow(QMainWindow):
     def load_inspector(self, quest):
         task = quest.tasks[0] if quest.tasks else None
         self.quest_title.setText(quest.title)
+        self.quest_subtitle.setText(quest.subtitle)
+        self.quest_icon.setText(quest.icon)
+        self.quest_shape.setText(quest.shape)
         self.quest_type.setText(task.type if task else "checkmark")
         self.quest_target.setText(task.target if task else "")
         self.quest_count.setValue(task.count if task else 1)
         self.quest_description.setPlainText("\n".join(quest.description))
+        if hasattr(self.store, "raw_sections"):
+            tasks, rewards = self.store.raw_sections(quest.id)
+        else:
+            tasks = [
+                {"type": item.type, "item": item.target, "count": item.count}
+                for item in quest.tasks
+            ]
+            rewards = quest.rewards
+        self.quest_tasks_raw.setPlainText(to_snbt(tasks))
+        self.quest_rewards_raw.setPlainText(to_snbt(rewards))
 
     def clear_inspector(self):
         self.quest_title.clear()
+        self.quest_subtitle.clear()
+        self.quest_icon.clear()
+        self.quest_shape.clear()
         self.quest_type.clear()
         self.quest_target.clear()
         self.quest_count.setValue(1)
         self.quest_description.clear()
+        self.quest_tasks_raw.clear()
+        self.quest_rewards_raw.clear()
 
     def save_project_title(self):
         self.store.project.title = self.project_title.text().strip() or "未命名任务书"
@@ -755,19 +859,30 @@ class MainWindow(QMainWindow):
         self.current_quest_id = quest.id
         self.refresh_all()
 
-    def apply_quest_changes(self):
+    def apply_quest_changes(self, raw_preferred: bool = False):
         if not self.current_quest_id:
             QMessageBox.information(self, "任务属性", "请先在画布中选择一个任务。")
             return
         try:
-            self.store.update_quest(
-                self.current_quest_id,
+            if raw_preferred:
+                parsed_tasks = parse_snbt(self.quest_tasks_raw.toPlainText() or "[]")
+                parsed_rewards = parse_snbt(self.quest_rewards_raw.toPlainText() or "[]")
+            if raw_preferred and hasattr(self.store, "replace_quest_sections"):
+                self.store.replace_quest_sections(self.current_quest_id, parsed_tasks, parsed_rewards)
+            changes = dict(
                 title=self.quest_title.text(),
+                subtitle=self.quest_subtitle.text(),
+                icon=self.quest_icon.text(),
+                shape=self.quest_shape.text(),
                 description=self.quest_description.toPlainText(),
-                task_type=self.quest_type.text(),
-                target=self.quest_target.text(),
-                count=self.quest_count.value(),
             )
+            if not raw_preferred:
+                changes.update(
+                    task_type=self.quest_type.text(),
+                    target=self.quest_target.text(),
+                    count=self.quest_count.value(),
+                )
+            self.store.update_quest(self.current_quest_id, **changes)
             self.refresh_all()
         except Exception as exc:
             QMessageBox.warning(self, "无法修改", str(exc))
@@ -810,6 +925,16 @@ class MainWindow(QMainWindow):
 
     def save_project(self):
         self.save_project_title()
+        if getattr(self.store, "is_real", False):
+            try:
+                result = self.store.save_all()
+                message = f"已写回 {result['saved']} 个真实章节"
+                if result.get("backup"):
+                    message += f"，备份：{result['backup']}"
+                self.statusBar().showMessage(message, 8000)
+            except Exception as exc:
+                QMessageBox.critical(self, "保存失败", str(exc))
+            return
         path = self.project_path
         if not path:
             path, _ = QFileDialog.getSaveFileName(self, "保存 AutoFTBQ 项目", "questbook.autoftbq.json", PROJECT_FILTER)
@@ -842,12 +967,24 @@ class MainWindow(QMainWindow):
                 items,
                 os.path.join(ROOT_DIR, ".autoftbq_cache", "icons"),
             )
-            self.store.project.mod_folder = folder
+            quest_root = locate_quest_root(folder)
+            loaded_text = ""
+            if quest_root:
+                self.store = FTBQuestStore.load_directory(quest_root, folder)
+                self.project_path = quest_root
+                self.current_chapter_id = ""
+                self.current_quest_id = ""
+                loaded_text = f"\n已打开真实任务书：{len(self.store.project.chapters)} 个章节"
+                if self.store.load_errors:
+                    loaded_text += f"，{len(self.store.load_errors)} 个文件读取失败"
+            else:
+                self.store.project.mod_folder = folder
             total = sum(len(value) for value in items.values())
             assets = self.asset_index.summary()
             self.modpack_status.setText(
                 f"已读取 {len(items)} 个命名空间 / {total} 个物品\n"
                 f"可预览 {assets['icons']} 个图标，另有 {assets['model_fallbacks']} 个模型待渲染"
+                f"{loaded_text}"
             )
             self.agent = None
             self.append_action("scan_modpack", f"{total} items")
@@ -947,19 +1084,28 @@ class MainWindow(QMainWindow):
     def append_action(self, name, detail):
         labels = {
             "get_project_summary": "读取项目",
+            "get_chapter_quests": "读取章节任务",
             "list_skills": "查看内置方案",
             "load_skill": "加载内置方案",
             "create_chapter": "创建章节",
             "add_quest": "添加任务",
             "update_quest": "修改任务",
+            "get_quest_sections": "读取任务与奖励",
+            "replace_quest_sections": "修改任务与奖励",
+            "move_quest": "移动任务",
             "connect_quests": "连接任务",
+            "disconnect_quests": "断开任务",
+            "remove_quest": "删除任务",
             "search_items": "搜索物品",
             "get_recipe": "读取配方",
             "validate_project": "检查项目",
             "scan_modpack": "扫描整合包",
         }
         self.action_list.insertItem(0, f"{labels.get(name, name)}  {detail[:90]}")
-        if name in {"create_chapter", "add_quest", "update_quest", "connect_quests"}:
+        if name in {
+            "create_chapter", "add_quest", "update_quest", "replace_quest_sections",
+            "move_quest", "connect_quests", "disconnect_quests", "remove_quest",
+        }:
             self.refresh_all()
 
     def append_chat(self, role, text):
