@@ -190,8 +190,6 @@ class ProjectStore:
             x=float(index * 3),
             y=0.0,
         )
-        if chapter.quests:
-            quest.dependencies = [chapter.quests[-1].id]
         chapter.quests.append(quest)
         return quest
 

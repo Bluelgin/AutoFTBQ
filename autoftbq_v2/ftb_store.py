@@ -213,8 +213,6 @@ class FTBQuestStore(ProjectStore):
             tasks=[Task(task_type or "checkmark", target.strip(), max(1, int(count or 1)))],
             x=float(len(chapter.quests) * 2.5), y=0.0,
         )
-        if chapter.quests:
-            quest.dependencies = [chapter.quests[-1].id]
         chapter.quests.append(quest)
         self.raw_quests[quest.id] = {}
         self.dirty_chapters.add(chapter_id)

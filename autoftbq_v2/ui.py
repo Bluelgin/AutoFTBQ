@@ -136,10 +136,12 @@ class QuestNode(QGraphicsRectItem):
         super().__init__(0, 0, self.WIDTH, self.HEIGHT)
         self.quest = quest
         self.on_move = on_move
+        self.edges = []
         self.setData(0, quest.id)
         self.setPos(x, y)
         self.setFlag(QGraphicsRectItem.GraphicsItemFlag.ItemIsSelectable, True)
         self.setFlag(QGraphicsRectItem.GraphicsItemFlag.ItemIsMovable, True)
+        self.setFlag(QGraphicsRectItem.GraphicsItemFlag.ItemSendsGeometryChanges, True)
         task_type = quest.tasks[0].type if quest.tasks else "checkmark"
         colors = {
             "item": "#d9efe9",
@@ -179,12 +181,37 @@ class QuestNode(QGraphicsRectItem):
     def itemChange(self, change, value):
         if change == QGraphicsRectItem.GraphicsItemChange.ItemSelectedChange:
             self.setPen(QPen(QColor("#19715a") if value else QColor("#a9a398"), 2.2 if value else 1.4))
+        elif change == QGraphicsRectItem.GraphicsItemChange.ItemPositionHasChanged:
+            for edge in self.edges:
+                edge.update_position()
         return super().itemChange(change, value)
+
+    def add_edge(self, edge):
+        self.edges.append(edge)
 
     def mouseReleaseEvent(self, event):
         super().mouseReleaseEvent(event)
         if self.on_move:
             self.on_move(self.quest.id, self.pos())
+
+
+class DependencyLine(QGraphicsLineItem):
+    def __init__(self, source: QuestNode, target: QuestNode):
+        super().__init__()
+        self.source = source
+        self.target = target
+        self.setPen(QPen(QColor("#8a958e"), 2))
+        self.setZValue(-1)
+        self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+        self.setToolTip(f"{source.quest.title} -> {target.quest.title}")
+        source.add_edge(self)
+        target.add_edge(self)
+        self.update_position()
+
+    def update_position(self):
+        start = self.source.sceneBoundingRect().center()
+        end = self.target.sceneBoundingRect().center()
+        self.setLine(start.x(), start.y(), end.x(), end.y())
 
 
 class MainWindow(QMainWindow):
@@ -496,7 +523,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         toolbar = QHBoxLayout()
         self.chapter_heading = QLabel("章节画布")
-        self.chapter_heading.setObjectName("sectionTitle")
+        self.chapter_heading.setObjectName("chapterHeading")
         toolbar.addWidget(self.chapter_heading)
         self.connection_hint = QLabel("空白处拖动画布 · 滚轮缩放")
         self.connection_hint.setObjectName("mainMuted")
@@ -606,6 +633,7 @@ class MainWindow(QMainWindow):
 
     def _build_validation_panel(self):
         panel = QWidget()
+        panel.setObjectName("validationPanel")
         layout = QVBoxLayout(panel)
         row = QHBoxLayout()
         row.addWidget(QLabel("本地确定性检查，不消耗 Token"))
@@ -692,7 +720,8 @@ class MainWindow(QMainWindow):
             #eyebrow { color: #7b847c; font-size: 10px; font-weight: 700; letter-spacing: 2px; }
             #viewTitle { color: #202520; font-size: 24px; font-weight: 800; }
             #mainMuted { color: #59645d; font-size: 10px; }
-            #sectionTitle { font-size: 16px; font-weight: 700; }
+            #sectionTitle { color: #202a24; font-size: 16px; font-weight: 700; }
+            #chapterHeading { color: #202a24; font-size: 16px; font-weight: 700; }
             #conversationCard { background: #fbfaf6; border: 1px solid #d7d2c7; border-radius: 15px; }
             #composer { background: #fbfaf6; border: 1px solid #cfc9bd; border-radius: 15px; }
             #modePill { background: #e2eee8; color: #25644f; border-radius: 9px; padding: 4px 9px; font-size: 10px; }
@@ -709,6 +738,10 @@ class MainWindow(QMainWindow):
             QTabBar::tab:selected { background: #fbfaf6; color: #17664f; font-weight: 700; }
             #inspectorPanel, #rawPanel { background: #f9f7f1; color: #27302b; }
             #inspectorPanel QLabel, #rawPanel QLabel { color: #303a34; font-weight: 600; }
+            #validationPanel { background: #f9f7f1; color: #27302b; }
+            #validationPanel QLabel { color: #303a34; font-weight: 600; }
+            #validationPanel QListWidget { background: #fffefb; color: #303a34; border: 1px solid #cfc9bd; }
+            #validationPanel QListWidget::item { color: #303a34; border-bottom: 1px solid #e4dfd5; }
             #inspectorPanel QLineEdit, #inspectorPanel QTextEdit, #inspectorPanel QSpinBox,
             #rawPanel QTextEdit { background: #fffefb; color: #202722; border: 1px solid #cfc9bd; }
             #statusPill { background: #dce9e3; color: #28634f; border-radius: 10px; padding: 5px 11px; }
@@ -788,12 +821,7 @@ class MainWindow(QMainWindow):
                 source = nodes.get(dependency_id)
                 if source is None or target is None:
                     continue
-                start = source.sceneBoundingRect().center()
-                end = target.sceneBoundingRect().center()
-                line = QGraphicsLineItem(start.x(), start.y(), end.x(), end.y())
-                line.setPen(QPen(QColor("#8a958e"), 2))
-                line.setToolTip(f"{source.quest.title} -> {target.quest.title}")
-                line.setZValue(-1)
+                line = DependencyLine(source, target)
                 self.scene.addItem(line)
         self.scene.setSceneRect(self.scene.itemsBoundingRect().adjusted(-40, -40, 80, 80))
 
@@ -904,7 +932,9 @@ class MainWindow(QMainWindow):
     def add_quest(self):
         if not self.current_chapter_id:
             self.add_chapter()
-        quest = self.store.add_quest(self.current_chapter_id, "新任务", "", "checkmark")
+        chapter = self.store.chapter(self.current_chapter_id)
+        ordinal = len(chapter.quests) + 1 if chapter else 1
+        quest = self.store.add_quest(self.current_chapter_id, f"新任务 {ordinal}", "", "checkmark")
         self.current_quest_id = quest.id
         self.refresh_all()
 

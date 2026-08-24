@@ -12,7 +12,7 @@ class V2ProjectTests(unittest.TestCase):
         first = store.add_quest(chapter.id, "Get iron", task_type="item", target="minecraft:iron_ingot")
         second = store.add_quest(chapter.id, "Make plate", task_type="item", target="create:iron_sheet")
 
-        self.assertEqual(second.dependencies, [first.id])
+        self.assertEqual(second.dependencies, [])
         self.assertTrue(store.undo())
         self.assertEqual(len(store.chapter(chapter.id).quests), 1)
         self.assertTrue(store.redo())
@@ -41,6 +41,7 @@ class V2ProjectTests(unittest.TestCase):
         first = store.add_quest(chapter.id, "First")
         second = store.add_quest(chapter.id, "Second")
 
+        store.connect(second.id, first.id)
         self.assertEqual(second.dependencies, [first.id])
         with self.assertRaisesRegex(ValueError, "循环依赖"):
             store.connect(first.id, second.id)

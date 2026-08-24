@@ -3,9 +3,10 @@ import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import QPointF
 from PySide6.QtWidgets import QApplication
 
-from autoftbq_v2.ui import MainWindow
+from autoftbq_v2.ui import DependencyLine, MainWindow, QuestNode
 
 
 class V2UiTests(unittest.TestCase):
@@ -43,6 +44,36 @@ class V2UiTests(unittest.TestCase):
             if hasattr(item, "data") and item.data(0)
         }
         self.assertEqual(len(node_ids), len(chapter.quests))
+        window.close()
+
+    def test_dependency_line_follows_moved_node(self):
+        window = MainWindow()
+        chapter = window.store.chapter(window.current_chapter_id)
+        second = window.store.add_quest(chapter.id, "Second")
+        window.store.connect(second.id, chapter.quests[0].id)
+        window.refresh_all()
+        edge = next(item for item in window.scene.items() if isinstance(item, DependencyLine))
+        source = next(
+            item for item in window.scene.items()
+            if isinstance(item, QuestNode) and item.quest.id == chapter.quests[0].id
+        )
+        before = QPointF(edge.line().p1())
+
+        source.setPos(source.pos() + QPointF(100, 40))
+
+        self.assertNotEqual(edge.line().p1(), before)
+        self.assertEqual(edge.line().p1(), source.sceneBoundingRect().center())
+        window.close()
+
+    def test_manual_add_creates_unique_unconnected_quest(self):
+        window = MainWindow()
+        chapter = window.store.chapter(window.current_chapter_id)
+
+        window.add_quest()
+        window.add_quest()
+
+        self.assertEqual([quest.title for quest in chapter.quests[-2:]], ["新任务 2", "新任务 3"])
+        self.assertEqual(chapter.quests[-1].dependencies, [])
         window.close()
 
 
