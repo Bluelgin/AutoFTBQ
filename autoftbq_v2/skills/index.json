@@ -1,0 +1,37 @@
+[
+  {
+    "id": "plan.mainline",
+    "title": "主线规划",
+    "description": "把核心玩法组织成清晰、连续且可验证的主进度。",
+    "triggers": ["主线", "核心", "流程", "进度"] ,
+    "file": "mainline.md"
+  },
+  {
+    "id": "plan.mod_branch",
+    "title": "模组支线",
+    "description": "为可选 Mod 创建不阻塞主线的支线内容。",
+    "triggers": ["支线", "可选", "额外", "模组任务"],
+    "file": "mod_branch.md"
+  },
+  {
+    "id": "plan.merge_progression",
+    "title": "主支线融合",
+    "description": "让多个 Mod 在合理节点分流、交叉或汇合。",
+    "triggers": ["融合", "汇合", "联动", "交叉"],
+    "file": "merge_progression.md"
+  },
+  {
+    "id": "plan.boss_progression",
+    "title": "Boss 与维度进度",
+    "description": "围绕维度探索、Boss 前置和掉落物设计挑战路线。",
+    "triggers": ["boss", "首领", "维度", "探索"],
+    "file": "boss_progression.md"
+  },
+  {
+    "id": "repair.questbook",
+    "title": "任务书修复",
+    "description": "定位错误 ID、断裂依赖、重复目标和空章节并进行小范围修复。",
+    "triggers": ["修复", "错误", "检查", "改错"],
+    "file": "repair.md"
+  }
+]

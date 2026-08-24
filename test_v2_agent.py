@@ -9,6 +9,9 @@ class FakeToolClient:
     def chat_with_tools(self, messages, tools, handler, **_kwargs):
         summary = handler("get_project_summary", {})
         self.assert_json(summary)
+        skills = handler("list_skills", {})
+        self.assert_json_list(skills)
+        handler("load_skill", {"skill_id": "plan.mod_branch"})
         chapter = handler("create_chapter", {"title": "机械动力"})
         import json
         chapter_id = json.loads(chapter)["chapter_id"]
@@ -28,6 +31,11 @@ class FakeToolClient:
     def assert_json(value):
         import json
         assert isinstance(json.loads(value), dict)
+
+    @staticmethod
+    def assert_json_list(value):
+        import json
+        assert isinstance(json.loads(value), list)
 
 
 class FakeActionClient:
@@ -54,7 +62,8 @@ class V2AgentTests(unittest.TestCase):
         self.assertEqual(store.project.chapters[0].title, "机械动力")
         self.assertEqual(store.project.chapters[0].quests[0].tasks[0].target, "create:mechanical_press")
         self.assertEqual(actions, [
-            "get_project_summary", "create_chapter", "search_items", "add_quest", "validate_project",
+            "get_project_summary", "list_skills", "load_skill", "create_chapter", "search_items",
+            "add_quest", "validate_project",
         ])
 
     def test_plain_chat_client_uses_bounded_action_protocol(self):

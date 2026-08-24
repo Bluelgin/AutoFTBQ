@@ -230,10 +230,29 @@ class ProjectStore:
             raise ValueError("依赖任务不存在")
         if found[0].id != dependency[0].id:
             raise ValueError("MVP 暂不支持跨章节依赖")
-        self._checkpoint()
-        if dependency_id not in found[1].dependencies and dependency_id != quest_id:
+        if dependency_id == quest_id:
+            raise ValueError("任务不能依赖自身")
+        if self._depends_on(dependency_id, quest_id):
+            raise ValueError("这条连线会形成循环依赖")
+        if dependency_id not in found[1].dependencies:
+            self._checkpoint()
             found[1].dependencies.append(dependency_id)
         return found[1]
+
+    def _depends_on(self, quest_id: str, dependency_id: str) -> bool:
+        visited = set()
+        pending = [quest_id]
+        while pending:
+            current_id = pending.pop()
+            if current_id == dependency_id:
+                return True
+            if current_id in visited:
+                continue
+            visited.add(current_id)
+            found = self.quest(current_id)
+            if found:
+                pending.extend(found[1].dependencies)
+        return False
 
     def summary(self) -> dict:
         return {

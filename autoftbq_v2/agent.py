@@ -9,11 +9,13 @@ from typing import Callable
 from quest_tools import QuestToolbox
 
 from .project import ProjectStore
+from .skill_registry import SkillRegistry
 
 
 AGENT_SYSTEM_PROMPT = """You are the AutoFTBQ project agent.
 You edit the current FTB Quests project only through the provided tools.
 Inspect the project before changing it. Search real item IDs instead of guessing.
+Choose and load the smallest relevant built-in skill before planning substantial edits.
 Make small, reviewable changes and call validate_project after edits.
 Never output a complete quest book JSON. Reply briefly in Chinese and summarize actions taken.
 If native tool calls are unavailable, return this exact fallback format:
@@ -28,10 +30,12 @@ class ProjectAgent:
         client,
         toolbox: QuestToolbox | None = None,
         on_action: Callable[[str, dict, object], None] | None = None,
+        skills: SkillRegistry | None = None,
     ):
         self.store = store
         self.client = client
         self.toolbox = toolbox or QuestToolbox()
+        self.skills = skills or SkillRegistry()
         self.on_action = on_action
         self.history: list[dict] = []
 
@@ -52,6 +56,10 @@ class ProjectAgent:
 
         return [
             spec("get_project_summary", "Inspect chapters and quest counts.", {}),
+            spec("list_skills", "List built-in quest-authoring skills and their triggers.", {}),
+            spec("load_skill", "Load one relevant built-in workflow before planning or repairing.", {
+                "skill_id": {"type": "string"},
+            }, ("skill_id",)),
             spec("create_chapter", "Create one chapter.", {
                 "title": {"type": "string"}, "icon": {"type": "string"},
             }, ("title",)),
@@ -87,6 +95,10 @@ class ProjectAgent:
         arguments = arguments if isinstance(arguments, dict) else {}
         if name == "get_project_summary":
             result = self.store.summary()
+        elif name == "list_skills":
+            result = self.skills.catalog()
+        elif name == "load_skill":
+            result = self.skills.load(arguments.get("skill_id", ""))
         elif name == "create_chapter":
             chapter = self.store.create_chapter(arguments.get("title", ""), arguments.get("icon", "minecraft:book"))
             result = {"chapter_id": chapter.id, "title": chapter.title}
@@ -121,10 +133,18 @@ class ProjectAgent:
         if self.client is None:
             raise RuntimeError("尚未连接 AI，请先配置 API 或 Ollama")
         context = json.dumps(self.store.summary(), ensure_ascii=False)
+        skill_catalog = json.dumps(self.skills.catalog(), ensure_ascii=False)
         messages = [
             {"role": "system", "content": AGENT_SYSTEM_PROMPT},
             *self.history[-10:],
-            {"role": "user", "content": f"当前项目摘要：{context}\n\n用户要求：{user_message}"},
+            {
+                "role": "user",
+                "content": (
+                    f"当前项目摘要：{context}\n"
+                    f"可按需加载的 Skills：{skill_catalog}\n\n"
+                    f"用户要求：{user_message}"
+                ),
+            },
         ]
         if hasattr(self.client, "chat_with_tools"):
             content, _ = self.client.chat_with_tools(

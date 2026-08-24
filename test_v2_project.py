@@ -35,6 +35,16 @@ class V2ProjectTests(unittest.TestCase):
         self.assertTrue(any("物品 ID" in issue["message"] for issue in issues))
         self.assertTrue(any("依赖不存在" in issue["message"] for issue in issues))
 
+    def test_manual_connection_rejects_cycles(self):
+        store = ProjectStore(QuestBookProject())
+        chapter = store.create_chapter("Progress")
+        first = store.add_quest(chapter.id, "First")
+        second = store.add_quest(chapter.id, "Second")
+
+        self.assertEqual(second.dependencies, [first.id])
+        with self.assertRaisesRegex(ValueError, "循环依赖"):
+            store.connect(first.id, second.id)
+
 
 if __name__ == "__main__":
     unittest.main()

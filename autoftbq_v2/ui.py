@@ -7,7 +7,7 @@ import json
 import os
 
 from PySide6.QtCore import QPointF, Qt, QThread, Signal
-from PySide6.QtGui import QBrush, QColor, QFont, QKeySequence, QPainter, QPen, QShortcut
+from PySide6.QtGui import QBrush, QColor, QFont, QKeySequence, QPainter, QPen, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -42,6 +42,7 @@ import mod_scanner
 from quest_tools import QuestToolbox
 
 from .agent import ProjectAgent
+from .asset_index import AssetIndex
 from .project import ProjectStore, QuestBookProject
 
 
@@ -75,7 +76,7 @@ class QuestNode(QGraphicsRectItem):
     WIDTH = 190
     HEIGHT = 82
 
-    def __init__(self, quest, x: float, y: float):
+    def __init__(self, quest, x: float, y: float, icon_path: str = ""):
         super().__init__(0, 0, self.WIDTH, self.HEIGHT)
         self.quest = quest
         self.setData(0, quest.id)
@@ -93,8 +94,20 @@ class QuestNode(QGraphicsRectItem):
         self.setPen(QPen(QColor("#a9a398"), 1.4))
         title = quest.title[:22] + ("..." if len(quest.title) > 22 else "")
         target = quest.tasks[0].target if quest.tasks else ""
-        self.title_item = self.scene_text(title, 14, True, QPointF(14, 12))
-        self.detail_item = self.scene_text(target or task_type, 10, False, QPointF(14, 44))
+        text_x = 14
+        if icon_path:
+            pixmap = QPixmap(icon_path)
+            if not pixmap.isNull():
+                from PySide6.QtWidgets import QGraphicsPixmapItem
+
+                self.icon_item = QGraphicsPixmapItem(
+                    pixmap.scaled(40, 40, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation),
+                    self,
+                )
+                self.icon_item.setPos(12, 20)
+                text_x = 62
+        self.title_item = self.scene_text(title, 13, True, QPointF(text_x, 12))
+        self.detail_item = self.scene_text(target or task_type, 9, False, QPointF(text_x, 44))
 
     def scene_text(self, text, size, bold, pos):
         from PySide6.QtWidgets import QGraphicsSimpleTextItem
@@ -117,10 +130,13 @@ class MainWindow(QMainWindow):
         self.store = ProjectStore(self._starter_project())
         self.project_path = ""
         self.toolbox = QuestToolbox()
+        self.asset_index = None
         self.agent = None
         self.agent_thread = None
         self.current_chapter_id = ""
         self.current_quest_id = ""
+        self.connect_mode = False
+        self.connection_source_id = ""
         self.setWindowTitle("AutoFTBQ v2 - Agent Workspace")
         self.resize(1460, 900)
         self.setMinimumSize(1100, 700)
@@ -175,6 +191,23 @@ class MainWindow(QMainWindow):
         brand_row.addStretch()
         layout.addLayout(brand_row)
 
+        step_label = QLabel("第一步")
+        step_label.setObjectName("sidebarLabel")
+        layout.addWidget(step_label)
+        pack_card = QFrame()
+        pack_card.setObjectName("packCard")
+        pack_layout = QVBoxLayout(pack_card)
+        pack_layout.setContentsMargins(12, 12, 12, 12)
+        choose_pack = QPushButton("选择整合包")
+        choose_pack.setObjectName("packButton")
+        choose_pack.clicked.connect(self.scan_modpack)
+        self.modpack_status = QLabel("尚未选择。将读取物品 ID、配方与图标。")
+        self.modpack_status.setWordWrap(True)
+        self.modpack_status.setObjectName("packStatus")
+        pack_layout.addWidget(choose_pack)
+        pack_layout.addWidget(self.modpack_status)
+        layout.addWidget(pack_card)
+
         self.project_title = QLineEdit()
         self.project_title.setObjectName("sidebarProjectTitle")
         self.project_title.editingFinished.connect(self.save_project_title)
@@ -219,10 +252,6 @@ class MainWindow(QMainWindow):
         self.chapter_list.setObjectName("sidebarChapters")
         self.chapter_list.currentItemChanged.connect(self.select_chapter)
         layout.addWidget(self.chapter_list, 1)
-        self.modpack_status = QLabel("尚未扫描整合包")
-        self.modpack_status.setWordWrap(True)
-        self.modpack_status.setObjectName("sidebarMuted")
-        layout.addWidget(self.modpack_status)
         return sidebar
 
     def _build_main_area(self):
@@ -406,13 +435,20 @@ class MainWindow(QMainWindow):
         self.chapter_heading = QLabel("章节画布")
         self.chapter_heading.setObjectName("sectionTitle")
         toolbar.addWidget(self.chapter_heading)
+        self.connection_hint = QLabel("普通选择模式")
+        self.connection_hint.setObjectName("mainMuted")
+        toolbar.addWidget(self.connection_hint)
         toolbar.addStretch()
+        self.connect_button = QPushButton("连线模式")
+        self.connect_button.setCheckable(True)
+        self.connect_button.toggled.connect(self.toggle_connect_mode)
         add = QPushButton("添加任务")
         add.clicked.connect(self.add_quest)
         undo = QPushButton("撤销")
         undo.clicked.connect(self.undo)
         redo = QPushButton("重做")
         redo.clicked.connect(self.redo)
+        toolbar.addWidget(self.connect_button)
         toolbar.addWidget(add)
         toolbar.addWidget(undo)
         toolbar.addWidget(redo)
@@ -539,6 +575,9 @@ class MainWindow(QMainWindow):
             #brandName { color: white; font-size: 18px; font-weight: 800; }
             #sidebarMuted { color: #899b93; font-size: 10px; }
             #sidebarLabel { color: #a9b7b0; font-size: 11px; font-weight: 700; margin-top: 8px; }
+            #packCard { background: #263b33; border: 1px solid #527264; border-radius: 11px; }
+            #packButton { background: #d7f05c; color: #1d2824; border: none; font-weight: 800; }
+            #packStatus { color: #d5e2db; font-size: 10px; }
             #sidebarProjectTitle { background: #283630; color: white; border: 1px solid #3b4a44; font-size: 16px; font-weight: 700; padding: 9px; }
             #sidebar QPushButton { background: #283630; color: #dce5e0; border: 1px solid #3b4a44; }
             #sidebar QPushButton:hover { background: #34453e; border-color: #647c71; }
@@ -547,7 +586,7 @@ class MainWindow(QMainWindow):
             #sidebarChapters::item:selected { background: #3b5148; color: white; }
             #eyebrow { color: #7b847c; font-size: 10px; font-weight: 700; letter-spacing: 2px; }
             #viewTitle { color: #202520; font-size: 24px; font-weight: 800; }
-            #mainMuted { color: #78827a; font-size: 10px; }
+            #mainMuted { color: #59645d; font-size: 10px; }
             #sectionTitle { font-size: 16px; font-weight: 700; }
             #conversationCard { background: #fbfaf6; border: 1px solid #d7d2c7; border-radius: 15px; }
             #composer { background: #fbfaf6; border: 1px solid #cfc9bd; border-radius: 15px; }
@@ -568,6 +607,8 @@ class MainWindow(QMainWindow):
             #actionList { background: #f0ede5; color: #59635d; border: 1px solid #ded9ce; }
             #actionList::item { border-bottom: 1px solid #ded9ce; }
             #prompt { background: transparent; color: #252c28; border: none; font-size: 14px; }
+            #prompt { placeholder-text-color: #657169; }
+            QPushButton:checked { background: #1f7059; color: white; border-color: #1f7059; }
             #agentButton { background: #d7f05c; color: #1c251f; border: none; font-weight: 800; padding: 9px 18px; }
             QSplitter::handle { background: transparent; width: 5px; }
         """)
@@ -614,11 +655,14 @@ class MainWindow(QMainWindow):
         self.chapter_heading.setText(chapter.title)
         nodes = {}
         for index, quest in enumerate(chapter.quests):
-            column = index % 4
             row = index // 4
+            offset = index % 4
+            column = offset if row % 2 == 0 else 3 - offset
             x = column * 235
             y = row * 125
-            node = QuestNode(quest, x, y)
+            task = quest.tasks[0] if quest.tasks else None
+            icon_path = self.asset_index.icon_for(task.target) if self.asset_index and task else ""
+            node = QuestNode(quest, x, y, icon_path)
             self.scene.addItem(node)
             nodes[quest.id] = node
         for quest in chapter.quests:
@@ -631,6 +675,7 @@ class MainWindow(QMainWindow):
                 end = target.sceneBoundingRect().center()
                 line = QGraphicsLineItem(start.x(), start.y(), end.x(), end.y())
                 line.setPen(QPen(QColor("#8a958e"), 2))
+                line.setToolTip(f"{source.quest.title} -> {target.quest.title}")
                 line.setZValue(-1)
                 self.scene.addItem(line)
         self.scene.setSceneRect(self.scene.itemsBoundingRect().adjusted(-40, -40, 80, 80))
@@ -647,8 +692,38 @@ class MainWindow(QMainWindow):
         selected = [item for item in self.scene.selectedItems() if isinstance(item, QuestNode)]
         if not selected:
             return
-        self.current_quest_id = selected[0].quest.id
-        self.load_inspector(selected[0].quest)
+        quest = selected[0].quest
+        if self.connect_mode:
+            self._handle_connection_click(quest)
+            return
+        self.current_quest_id = quest.id
+        self.load_inspector(quest)
+
+    def toggle_connect_mode(self, enabled: bool):
+        self.connect_mode = enabled
+        self.connection_source_id = ""
+        self.scene.clearSelection()
+        self.connection_hint.setText("先点击前置任务 A" if enabled else "普通选择模式")
+
+    def _handle_connection_click(self, quest):
+        if not self.connection_source_id:
+            self.connection_source_id = quest.id
+            self.connection_hint.setText(f"前置：{quest.title}，再点击后置任务 B")
+            return
+        source_id = self.connection_source_id
+        self.connection_source_id = ""
+        if source_id == quest.id:
+            self.connection_hint.setText("不能连接任务自身，请重新选择 A")
+            self.scene.clearSelection()
+            return
+        try:
+            self.store.connect(quest.id, source_id)
+            self.connection_hint.setText(f"已连接 A -> {quest.title}，可继续选择下一组")
+            self.append_action("connect_quests", f"{source_id} -> {quest.id}")
+            self.refresh_all()
+        except ValueError as exc:
+            self.connection_hint.setText(str(exc))
+            self.scene.clearSelection()
 
     def load_inspector(self, quest):
         task = quest.tasks[0] if quest.tasks else None
@@ -748,20 +823,35 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "保存失败", str(exc))
 
     def scan_modpack(self):
-        folder = QFileDialog.getExistingDirectory(self, "选择整合包根目录或 mods 文件夹", self.store.project.mod_folder)
-        if not folder:
+        selected_folder = QFileDialog.getExistingDirectory(
+            self, "选择整合包根目录或 mods 文件夹", self.store.project.mod_folder
+        )
+        if not selected_folder:
             return
+        folder = os.path.abspath(selected_folder)
+        if os.path.basename(folder).casefold() == "mods":
+            folder = os.path.dirname(folder)
         mods_dir = os.path.join(folder, "mods") if os.path.isdir(os.path.join(folder, "mods")) else folder
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
             items = mod_scanner.scan_folder_items(mods_dir)
             recipes = dict(getattr(mod_scanner, "_recipe_inputs_cache", {}))
             self.toolbox = QuestToolbox(items, recipes)
+            self.asset_index = AssetIndex.build(
+                folder,
+                items,
+                os.path.join(ROOT_DIR, ".autoftbq_cache", "icons"),
+            )
             self.store.project.mod_folder = folder
             total = sum(len(value) for value in items.values())
-            self.modpack_status.setText(f"已索引 {len(items)} 个命名空间 / {total} 个物品")
+            assets = self.asset_index.summary()
+            self.modpack_status.setText(
+                f"已读取 {len(items)} 个命名空间 / {total} 个物品\n"
+                f"可预览 {assets['icons']} 个图标，另有 {assets['model_fallbacks']} 个模型待渲染"
+            )
             self.agent = None
             self.append_action("scan_modpack", f"{total} items")
+            self.refresh_all()
         except Exception as exc:
             QMessageBox.critical(self, "扫描失败", str(exc))
         finally:
@@ -857,6 +947,8 @@ class MainWindow(QMainWindow):
     def append_action(self, name, detail):
         labels = {
             "get_project_summary": "读取项目",
+            "list_skills": "查看内置方案",
+            "load_skill": "加载内置方案",
             "create_chapter": "创建章节",
             "add_quest": "添加任务",
             "update_quest": "修改任务",
@@ -867,6 +959,8 @@ class MainWindow(QMainWindow):
             "scan_modpack": "扫描整合包",
         }
         self.action_list.insertItem(0, f"{labels.get(name, name)}  {detail[:90]}")
+        if name in {"create_chapter", "add_quest", "update_quest", "connect_quests"}:
+            self.refresh_all()
 
     def append_chat(self, role, text):
         safe = escape(str(text)).replace("\n", "<br>")
