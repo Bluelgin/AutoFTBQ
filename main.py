@@ -522,6 +522,9 @@ class App:
         self.api_url_var = tk.StringVar(value=self.config.get("api_url", ""))
         self.api_model_var = tk.StringVar(value=self.config.get("api_model", ""))
         self.models_url_var = tk.StringVar(value=self.config.get("models_url", ""))
+        self.auto_complete_url_var = tk.BooleanVar(
+            value=bool(self.config.get("api_url_auto_complete", True))
+        )
         self._fetched_models = []  # 缓存已获取的模型列表
         self._model_request_id = 0
         self._active_provider = None
@@ -620,6 +623,7 @@ class App:
         self.config["api_url"] = self.api_url_var.get().strip()
         self.config["api_model"] = self.api_model_var.get().strip()
         self.config["models_url"] = self.models_url_var.get().strip()
+        self.config["api_url_auto_complete"] = bool(self.auto_complete_url_var.get())
         self.config["ollama_model"] = self.ollama_model_var.get()
         self.config["density"] = self.density_var.get()
         self.config["max_output_tokens"] = self.max_output_tokens_var.get().strip()
@@ -722,7 +726,7 @@ class App:
                 self.api_url_var.set("")
             self.api_url_entry.config(state=tk.NORMAL, bg="#ffffff", fg="#333333")
             self.api_url_label.config(text="API URL:", fg="#555555")
-            self.api_url_hint_label.config(text="填写 OpenAI 兼容的 chat/completions 接口地址", fg="#888888")
+            self.api_url_hint_label.config(text="可填完整地址或基础地址（未含 /chat/completions 时自动补全）", fg="#888888")
         else:
             # 预设服务商：自动填入URL并设为只读
             chat_url = preset.get("chat_url", "")
@@ -741,6 +745,16 @@ class App:
                 self.models_url_row.pack_forget()
                 # 预设服务商清空自定义 models_url（用预设的）
                 self.models_url_var.set("")
+
+        # ── API 完整地址开关行：仅第三方自定义时显示 ──
+        if hasattr(self, 'auto_complete_row'):
+            if is_custom:
+                self.auto_complete_row.pack(
+                    fill=tk.X, pady=(0, 4),
+                    after=self.models_url_row if hasattr(self, 'models_url_row') else self.api_url_entry.master,
+                )
+            else:
+                self.auto_complete_row.pack_forget()
 
         # ── 服务商特定提示 ──
         if hasattr(self, 'provider_hint_label'):
@@ -1198,7 +1212,20 @@ class App:
         tk.Label(self.models_url_row, text="留空自动推导", font=("Microsoft YaHei", 7),
                  fg="#aaaaaa", bg="#ffffff").pack(side=tk.LEFT, padx=(4, 0))
 
-        # Row 2c: 服务商特定提示（如火山引擎的 Endpoint ID 提示）
+        # Row 2c: API 完整地址开关（仅第三方自定义时显示）
+        self.auto_complete_row = tk.Frame(self.provider_frame, bg="#ffffff")
+        self.auto_complete_check = tk.Checkbutton(
+            self.auto_complete_row,
+            text="自动补全 /chat/completions（基础地址自动补全，如 .../api/coding/v3 → .../v3/chat/completions）",
+            variable=self.auto_complete_url_var,
+            font=("Microsoft YaHei", 8),
+            fg="#666666", bg="#ffffff", activebackground="#ffffff",
+            selectcolor="#ffffff", command=self._save_config,
+        )
+        self.auto_complete_check.pack(side=tk.LEFT, anchor=tk.W)
+        # 默认不 pack，_on_provider_change 会控制显示
+
+        # Row 2d: 服务商特定提示（如火山引擎的 Endpoint ID 提示）
         self.provider_hint_label = tk.Label(self.provider_frame, text="", font=("Microsoft YaHei", 8),
                                              fg="#e65100", bg="#fff8e1", wraplength=680, justify=tk.LEFT,
                                              anchor=tk.W)
@@ -1479,6 +1506,8 @@ class App:
                 self.use_wiki_check.config(state=s)
             if hasattr(self, 'polish_after_generate_check'):
                 self.polish_after_generate_check.config(state=s)
+            if hasattr(self, 'auto_complete_check'):
+                self.auto_complete_check.config(state=s)
             # URL 字段：解锁时恢复到供应商对应的状态
             if hasattr(self, 'api_url_entry'):
                 if locked:
@@ -1645,11 +1674,12 @@ class App:
             "density": self.density_var.get(),
             "max_output_tokens": int(self.max_output_tokens_var.get().strip()) if self.max_output_tokens_var.get().strip() else None,
             "polish_after_generate": bool(self.polish_after_generate_var.get()),
+            "auto_complete": bool(self.auto_complete_url_var.get()),
         }, daemon=True).start()
 
     def _generate_thread(self, api_key, selected_mods, lang, engine, ollama_model, output_dir, use_wiki=False,
                          provider=None, api_url=None, api_model=None, density="medium",
-                         max_output_tokens=None, polish_after_generate=False):
+                         max_output_tokens=None, polish_after_generate=False, auto_complete=True):
         try:
             mf = self.mod_folder_var.get().strip()
             out = generate_quest_book(
@@ -1659,7 +1689,8 @@ class App:
                 use_wiki=use_wiki, provider=provider, api_url=api_url, api_model=api_model,
                 density=density,
                 max_output_tokens=max_output_tokens,
-                polish_after_generate=polish_after_generate
+                polish_after_generate=polish_after_generate,
+                auto_complete=auto_complete,
             )
             self._generation_events.put(("done", out, None))
         except Exception as e:
@@ -1681,6 +1712,25 @@ class App:
             self.progress_bar["value"] = 100
         if hasattr(self, 'progress_label'):
             self.progress_label.config(text="Done!")
+        # 生成中断（如 Token/额度不足）时保存的部分任务书：以警告形式提示
+        partial_path = os.path.join(path, "partial_report.txt")
+        if os.path.isfile(partial_path):
+            self.set_info("部分生成完成 - 已完成章节已保存", "warning")
+            detail = ""
+            try:
+                with open(partial_path, "r", encoding="utf-8") as handle:
+                    detail = handle.read().strip()
+            except OSError:
+                pass
+            if messagebox.askyesno(
+                "部分生成完成",
+                f"生成过程中断（可能是 Token 不足或额度用尽）。\n\n"
+                f"已完成的部分任务书已保存到:\n{path}\n\n"
+                f"{detail}\n\n打开目录查看？",
+            ):
+                try: os.startfile(path)
+                except Exception: subprocess.Popen(["explorer", path], shell=True)
+            return
         summary = ""
         try:
             quality_path = os.path.join(path, "quality_report.txt")

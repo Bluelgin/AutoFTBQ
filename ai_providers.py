@@ -114,6 +114,32 @@ def select_provider_model(provider, current_model, available_models):
     return models[0] if models else resolved
 
 
+def ensure_chat_completions_url(chat_url):
+    """Normalize a chat endpoint URL.
+
+    Accepts either a full address ending with ``/chat/completions`` or a base
+    address (e.g. ``https://ark.cn-beijing.volces.com/api/coding/v3``) and
+    automatically appends ``/chat/completions`` when it is missing.
+    Returns an empty string for blank or malformed input.
+    """
+    if not chat_url or not str(chat_url).strip():
+        return ""
+    raw = str(chat_url).strip()
+    try:
+        parsed = urlsplit(raw)
+    except ValueError:
+        return raw
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return raw
+    path = parsed.path.rstrip("/")
+    if path.endswith("/chat/completions"):
+        return raw
+    suffix = "/chat/completions"
+    if not path:
+        return urlunsplit((parsed.scheme, parsed.netloc, "/chat/completions", parsed.query, parsed.fragment))
+    return urlunsplit((parsed.scheme, parsed.netloc, path + suffix, parsed.query, parsed.fragment))
+
+
 def derive_models_url(chat_url):
     """Derive a common OpenAI-compatible models endpoint from a chat URL."""
     if not chat_url:
@@ -132,7 +158,21 @@ def derive_models_url(chat_url):
     elif path.endswith("/v1"):
         path += "/models"
     else:
-        return ""
+        # 用户填的是基础地址（未含 /chat/completions）：先补全再推导
+        normalized = ensure_chat_completions_url(str(chat_url).strip())
+        if not normalized or normalized == str(chat_url).strip():
+            return ""
+        try:
+            parsed2 = urlsplit(normalized)
+            path2 = parsed2.path.rstrip("/")
+            if path2.endswith(suffix):
+                path = path2[:-len(suffix)] + "/models"
+            elif path2.endswith("/v1"):
+                path = path2 + "/models"
+            else:
+                return ""
+        except ValueError:
+            return ""
     return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
 
 

@@ -1,6 +1,8 @@
 import json
+import os
 import re
 import sys
+import tempfile
 import types
 import unittest
 
@@ -11,6 +13,7 @@ except ModuleNotFoundError:
 
 from ai_module import QuestBookGenerator
 from instance_resolver import InstanceInfo
+from quest_generation import GenerationInterrupted
 
 
 class ExactClient:
@@ -60,6 +63,28 @@ class InvalidShapeClient:
 class FailingClient:
     def chat(self, messages, temperature=0.7, max_tokens=8192):
         raise RuntimeError("offline")
+
+
+class InterruptAfterTwoClient:
+    """Succeeds for the first two calls, then fails (simulates exhausted balance)."""
+
+    def __init__(self):
+        self.calls = 0
+        self.counter = 0
+
+    def chat(self, messages, temperature=0.7, max_tokens=8192):
+        self.calls += 1
+        if self.calls > 2:
+            raise RuntimeError("账户额度不足")
+        quests = []
+        for _ in range(2):
+            self.counter += 1
+            quests.append({
+                "title": f"任务 {self.counter}",
+                "tasks": [{"type": "item", "target": f"minecraft:item_{self.counter}", "count": 1}],
+                "rewards": [],
+            })
+        return json.dumps({"quests": quests}, ensure_ascii=False), False
 
 
 def _small_plan(target=5, batch_size=2):
@@ -181,6 +206,68 @@ class StagedGenerationTests(unittest.TestCase):
 
         self.assertIn("Minecraft: 1.20.1", context)
         self.assertIn("Loader: Forge", context)
+
+    def test_interruption_saves_partial_quests_and_checkpoint(self):
+        tmpdir = tempfile.mkdtemp(dir=".", prefix=".test_checkpoint_")
+        checkpoint = os.path.join(tmpdir, "generation_progress.json")
+        try:
+            client = InterruptAfterTwoClient()
+            self.generator.client = client
+            self.generator._build_generation_plan = lambda: [
+                {**_small_plan(2, 2)[0], "id": "first", "title": "First"},
+                {**_small_plan(2, 1)[0], "id": "second", "title": "Second"},
+            ]
+
+            with self.assertRaises(GenerationInterrupted) as ctx:
+                self.generator._generate_questbook_staged(
+                    checkpoint_path=checkpoint,
+                )
+
+            exc = ctx.exception
+            self.assertEqual(exc.completed_chapters, 2)
+            self.assertEqual(exc.total_chapters, 2)
+            partial = json.loads(exc.partial_json)
+            self.assertEqual(len(partial["chapters"]), 2)
+            # 第一个章节完整（2 个任务），第二个章节保留了中断前已生成的任务
+            self.assertEqual(len(partial["chapters"][0]["quests"]), 2)
+            self.assertEqual(len(partial["chapters"][1]["quests"]), 1)
+
+            # 检查点文件存在且标记中断
+            self.assertTrue(os.path.isfile(checkpoint))
+            with open(checkpoint, "r", encoding="utf-8") as handle:
+                saved = json.load(handle)
+            self.assertTrue(saved["_progress"]["interrupted"])
+            self.assertEqual(saved["_progress"]["completed_chapters"], 2)
+            self.assertEqual(len(saved["chapters"]), 2)
+        finally:
+            import shutil
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_checkpoint_is_written_after_each_completed_chapter(self):
+        tmpdir = tempfile.mkdtemp(dir=".", prefix=".test_checkpoint_")
+        checkpoint = os.path.join(tmpdir, "generation_progress.json")
+        try:
+            client = ExactClient()
+            self.generator.client = client
+            self.generator._build_generation_plan = lambda: [
+                {**_small_plan(2, 2)[0], "id": "first", "title": "First"},
+                {**_small_plan(2, 2)[0], "id": "second", "title": "Second"},
+            ]
+
+            result = json.loads(self.generator._generate_questbook_staged(
+                checkpoint_path=checkpoint,
+            ))
+
+            self.assertEqual(len(result["chapters"]), 2)
+            self.assertTrue(os.path.isfile(checkpoint))
+            with open(checkpoint, "r", encoding="utf-8") as handle:
+                saved = json.load(handle)
+            self.assertFalse(saved["_progress"]["interrupted"])
+            self.assertEqual(saved["_progress"]["completed_chapters"], 2)
+            self.assertEqual(len(saved["chapters"]), 2)
+        finally:
+            import shutil
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 if __name__ == "__main__":

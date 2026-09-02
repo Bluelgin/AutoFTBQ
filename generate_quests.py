@@ -64,6 +64,7 @@ def main() -> None:
         density=config.get("density", "max"),
         max_output_tokens=None,
         polish_after_generate=bool(config.get("polish_after_generate", False)),
+        auto_complete=bool(config.get("api_url_auto_complete", True)),
     )
     print(f"[INFO] done, output: {saved}", flush=True)
 

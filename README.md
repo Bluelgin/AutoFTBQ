@@ -24,6 +24,12 @@
 
 > 目前稳定版支持 DeepSeek、Ollama，以及手动配置的 OpenAI 兼容 API。第三方服务没有统一的模型列表和错误格式，所以自定义 API 需要用户自己填写并确认参数。
 
+## 本次改动
+
+- **自定义 API 完整地址开关**：API URL 可以只填基础地址（如 `https://ark.cn-beijing.volces.com/api/coding/v3`），软件会自动补全为 `/chat/completions`；已包含完整地址时原样使用。模型列表 URL 也能从基础地址自动推导。
+- **缓解 Windows 安全中心误报**：打包默认禁用 UPX 压缩并写入正式版本信息；新增 `add_defender_exclusion.bat`，可一键把软件加入 Defender 白名单。
+- **生成进度保存**：分阶段生成时每完成一个章节都会写入 `generation_progress.json`；如果 Token/额度不足导致生成中断，已完成的部分任务书会自动保存为可用 SNBT，并在界面提示“部分生成完成”。
+
 ## v1.3.9 更新
 
 - 修复部分启动器版本 JSON 结构不同，导致生成任务刚开始便自动结束的问题。
@@ -144,24 +150,34 @@ Windows 用户也可以运行仓库中的 `start.bat`。
 | 输入项 | 填写内容 |
 |---|---|
 | API Key | 服务商提供的密钥；本地服务如果不校验密钥，也可以填写任意非空内容 |
-| 自定义 URL | 完整的 Chat Completions 地址，通常以 `/chat/completions` 结尾 |
+| 自定义 URL | 接口地址，既可以是完整地址（以 `/chat/completions` 结尾），也可以是基础地址（如只到 `/v1` 或 `/api/coding/v3`） |
+| 自动补全 `/chat/completions` | 默认开启：填基础地址时自动补全；填完整地址时原样使用。关闭后地址完全按输入使用 |
 | 模型 | 服务商实际提供的模型 ID，必须和接口支持的名称完全一致 |
 
-例如，OpenAI 兼容接口通常类似这样：
+例如，接口基础地址只到 `/v1` 也可以直接填写：
 
 ```text
-API URL: https://example.com/v1/chat/completions
+API URL: https://example.com/v1
 模型: your-model-id
 ```
 
-本地代理也可以这样填写：
+软件会自动把它补全为 `https://example.com/v1/chat/completions`。火山引擎等平台的 Endpoint 也可以只填控制台地址，例如：
+
+```text
+API URL: https://ark.cn-beijing.volces.com/api/coding/v3
+模型: ep-xxxxxxxx
+```
+
+会自动补全为 `https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions`。
+
+本地代理这样填写：
 
 ```text
 API URL: http://127.0.0.1:1234/v1/chat/completions
 模型: local-model-name
 ```
 
-这里的 URL 不是网页地址，也不是只到 `/v1` 的基础地址，最好直接填写完整的 `/chat/completions` 接口。
+这里填写的 URL 不是网页地址。如果关闭了“自动补全”，就需要手动写完整的 `/chat/completions` 接口。
 
 自定义 API 目前不会自动读取模型列表，也不会替你判断服务商是否真的支持 OpenAI 格式。你需要从服务商文档或控制台确认以下内容：
 
@@ -283,7 +299,9 @@ questbook_output/
 ├─ reward_tables/
 ├─ ai_raw_output.txt
 ├─ id_validation_report.txt
-└─ quality_report.txt
+├─ quality_report.txt
+├─ generation_progress.json   # 生成进度检查点（每完成一章写入，全部完成后自动删除）
+└─ partial_report.txt         # 仅“部分生成完成”时出现，说明中断原因与保存情况
 ```
 
 - `data.snbt`：任务书全局配置。
@@ -292,6 +310,18 @@ questbook_output/
 - `ai_raw_output.txt`：AI 原始输出，方便排查生成问题。
 - `id_validation_report.txt`：物品 ID 校验结果。
 - `quality_report.txt`：正文补全、全局去重、失效依赖和发布检查结果。
+- `generation_progress.json`：分阶段生成的进度检查点。每完成一个章节就会更新一次；如果中途 Token/额度不足或程序异常中断，这个文件里保留了已完成章节，可据此恢复。
+- `partial_report.txt`：仅当生成中断且保存了部分任务书时出现，说明中断原因、已完成章节数和存放位置。
+
+### Token 不足/中断时的部分保存
+
+分阶段生成是逐章进行的，每完成一章都会把进度写入检查点。如果生成过程中 Token 或余额不足（例如 API 返回额度不足），软件不会丢失已生成的内容：
+
+1. 已完成章节的任务会立即保存为可用 SNBT（`data.snbt` + `chapters/*.snbt`）。
+2. 输出目录中会生成 `partial_report.txt` 说明中断原因和保存情况。
+3. 界面会提示“部分生成完成”，可直接查看已保存的任务书，或把该目录内容导入游戏；Token 充足后也可以重新生成。
+
+如果想中途手动停止，直接关闭窗口前会询问是否中断；中断后同样会保留已完成的部分。
 
 ## 常见问题
 
@@ -321,6 +351,22 @@ ollama pull qwen2.5-coder:7b
 
 软件会依次从 GitHub Raw、jsDelivr 和 GitHub Release API 获取版本信息，单个来源不可用时会自动切换。全部来源都无法访问时，更新检查会显示失败，但不会影响任务生成；也可以直接从 [Releases](https://github.com/Bluelgin/AutoFTBQ/releases) 手动下载最新版。
 
+### Windows 安全中心 / Defender 误报
+
+打包后的 exe 是 PyInstaller 生成、未做代码签名的程序，这类程序偶尔会被 Microsoft Defender 或 SmartScreen 误报。本仓库已做以下缓解：
+
+- 打包时默认**禁用 UPX 压缩**（UPX 是误报的常见触发点）。
+- 给 exe 写入**正式的版本资源**（作者、版本、产品名），在文件属性里可以看到详细信息。
+- 提供一键白名单脚本 **`add_defender_exclusion.bat`**。
+
+如果仍然被拦截，按下面步骤处理：
+
+1. 把 `add_defender_exclusion.bat` 复制到 exe 所在目录，右键“以管理员身份运行”，自动把该目录加入 Windows 安全中心排除列表。
+2. 或者手动添加：`设置 → 隐私和安全性 → Windows 安全中心 → 病毒和威胁防护 → 管理设置 → 排除项`，把 exe 所在文件夹加入排除。
+3. 若 exe 已被删除，重新从 [Releases](https://github.com/Bluelgin/AutoFTBQ/releases) 下载。
+4. 首次运行出现 SmartScreen 提示时，点“更多信息 → 仍要运行”。
+5. 本项目是 GPL-3.0 开源项目，源码完全公开。确认程序来自官方 Releases 后，也可以在 Windows 安全中心中把它“允许”并反馈误报，帮助改进。
+
 ## 项目结构
 
 | 文件 | 作用 |
@@ -336,6 +382,9 @@ ollama pull qwen2.5-coder:7b
 | `quest_layout.py` | 人工风格布局重排（主线/分支/信息任务） |
 | `quest_polish.py` | AI 文案润色管线（补丁式输出+结构校验） |
 | `polish_quests.py` | 命令行：对已有任务书重排/润色 |
+| `AutoFTBQ.spec` | PyInstaller 打包配置（禁用 UPX、内嵌版本信息） |
+| `version_info.txt` | exe 的版本资源文件（降低 Defender 误报） |
+| `add_defender_exclusion.bat` | 一键把软件加入 Windows 安全中心排除列表 |
 | `test_*.py` | KubeJS、SNBT、分阶段生成和更新模块测试 |
 
 ## 参与贡献
