@@ -31,10 +31,14 @@ from mod_info import (
     curseforge_search_url,
     fetch_mod_info,
     format_mod_info,
+    ftbwiki_search_url,
     mcmod_class_url,
     mcmod_search_url,
+    moddedminecraftwiki_search_url,
     modrinth_detail_url,
     modrinth_search_url,
+    planetminecraft_search_url,
+    web_search_url,
 )
 
 
@@ -47,10 +51,35 @@ class ModInfoLinkTests(unittest.TestCase):
             "https://www.curseforge.com/minecraft/search?search=create",
         )
 
+    def test_extra_platform_search_links(self):
+        self.assertEqual(
+            ftbwiki_search_url("create"),
+            "https://ftb.fandom.com/wiki/Special:Search?query=create",
+        )
+        self.assertEqual(
+            moddedminecraftwiki_search_url("create"),
+            "https://moddedminecraft.wiki/w/Special:Search?search=create",
+        )
+        self.assertEqual(
+            planetminecraft_search_url("create"),
+            "https://www.planetminecraft.com/mods/?q=create",
+        )
+        self.assertIn("baidu.com", web_search_url("create"))
+
     def test_class_and_slug_links(self):
         self.assertEqual(mcmod_class_url("12345"), "https://www.mcmod.cn/class/12345.html")
         self.assertEqual(mcmod_class_url(""), "")
         self.assertEqual(modrinth_detail_url("create"), "https://modrinth.com/mod/create")
+
+    def test_build_links_prefers_detail_pages(self):
+        links = build_links("create", mcmod_class_id="12345", modrinth_slug="create")
+        self.assertEqual(links["mcmod"], "https://www.mcmod.cn/class/12345.html")
+        self.assertEqual(links["modrinth"], "https://modrinth.com/mod/create")
+        self.assertIn("curseforge", links)
+        self.assertIn("ftbwiki", links)
+        self.assertIn("moddedminecraftwiki", links)
+        self.assertIn("planetminecraft", links)
+        self.assertIn("websearch", links)
 
     def test_build_links_prefers_detail_pages(self):
         links = build_links("create", mcmod_class_id="12345", modrinth_slug="create")
@@ -90,6 +119,8 @@ class ModInfoFetchTests(unittest.TestCase):
         resp.json = lambda: {
             "title": "Create", "description": "A tech mod", "categories": ["technology"],
             "downloads": 123456, "slug": "create",
+            "game_versions": ["1.21.1", "1.21", "1.20.6", "1.20.1"],
+            "loaders": ["forge", "fabric", "neoforge"],
         }
         _sess.return_value.get.return_value = resp
         info = fetch_mod_info("create", local_name="Create")
@@ -99,6 +130,8 @@ class ModInfoFetchTests(unittest.TestCase):
         self.assertEqual(info["downloads"], 123456)
         self.assertEqual(info["category"], "tech")
         self.assertEqual(info["links"]["modrinth"], "https://modrinth.com/mod/create")
+        self.assertEqual(info["game_versions"][:2], ["1.21.1", "1.21"])
+        self.assertEqual(info["loaders"], ["forge", "fabric", "neoforge"])
 
     @patch("mod_info._wiki.fetch_mod_wiki", return_value=None)
     @patch("mod_info._mrc._get_session")
@@ -124,11 +157,17 @@ class ModInfoFormatTests(unittest.TestCase):
         info = {
             "mod_id": "create", "name": "Create", "summary": "A tech mod", "guide": "",
             "category": "tech", "platform": "modrinth", "downloads": 123456,
+            "game_versions": ["1.21.1", "1.21", "1.20.1"],
+            "loaders": ["forge", "fabric"],
             "links": {
                 "mcmod": "https://search.mcmod.cn/s?key=create",
                 "modrinth": "https://modrinth.com/mod/create",
                 "curseforge": "https://www.curseforge.com/minecraft/search?search=create",
                 "mcmod_search": "https://search.mcmod.cn/s?key=create",
+                "ftbwiki": "https://ftb.fandom.com/wiki/Special:Search?query=create",
+                "moddedminecraftwiki": "https://moddedminecraft.wiki/w/Special:Search?search=create",
+                "planetminecraft": "https://www.planetminecraft.com/mods/?q=create",
+                "websearch": "https://www.baidu.com/s?wd=create%20mod",
             },
         }
         text = format_mod_info(info)
@@ -138,6 +177,11 @@ class ModInfoFormatTests(unittest.TestCase):
         self.assertIn("Modrinth", text)
         self.assertIn("A tech mod", text)
         self.assertIn("123,456", text)
+        self.assertIn("支持 MC 版本: 1.21.1, 1.21, 1.20.1", text)
+        self.assertIn("加载器: Forge, Fabric", text)
+        self.assertIn("FTB Wiki", text)
+        self.assertIn("ModdedMC Wiki", text)
+        self.assertIn("Planet Minecraft", text)
 
     def test_format_local_fallback_message(self):
         info = {

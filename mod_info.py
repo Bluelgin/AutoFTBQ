@@ -53,12 +53,32 @@ def curseforge_search_url(mod_id):
     return f"https://www.curseforge.com/minecraft/search?search={mod_id}"
 
 
+def ftbwiki_search_url(mod_id):
+    return f"https://ftb.fandom.com/wiki/Special:Search?query={mod_id}"
+
+
+def moddedminecraftwiki_search_url(mod_id):
+    return f"https://moddedminecraft.wiki/w/Special:Search?search={mod_id}"
+
+
+def planetminecraft_search_url(mod_id):
+    return f"https://www.planetminecraft.com/mods/?q={mod_id}"
+
+
+def web_search_url(mod_id):
+    return f"https://www.baidu.com/s?wd={mod_id}%20mod"
+
+
 def build_links(mod_id, mcmod_class_id="", modrinth_slug=""):
     return {
         "mcmod": mcmod_class_url(mcmod_class_id) or mcmod_search_url(mod_id),
         "modrinth": modrinth_detail_url(modrinth_slug) or modrinth_search_url(mod_id),
         "curseforge": curseforge_search_url(mod_id),
         "mcmod_search": mcmod_search_url(mod_id),
+        "ftbwiki": ftbwiki_search_url(mod_id),
+        "moddedminecraftwiki": moddedminecraftwiki_search_url(mod_id),
+        "planetminecraft": planetminecraft_search_url(mod_id),
+        "websearch": web_search_url(mod_id),
     }
 
 
@@ -79,7 +99,7 @@ def _fetch_mcmod_info(mod_id):
 
 
 def _fetch_modrinth_info(mod_id):
-    """Modrinth API：名称 + 简介 + 下载量 + slug。"""
+    """Modrinth API：名称 + 简介 + 下载量 + slug + 支持版本/加载器。"""
     try:
         session = _mrc._get_session()
         resp = session.get(
@@ -95,6 +115,8 @@ def _fetch_modrinth_info(mod_id):
                     "categories": data.get("categories") or [],
                     "downloads": int(data.get("downloads") or 0),
                     "slug": data.get("slug") or "",
+                    "game_versions": data.get("game_versions") or [],
+                    "loaders": data.get("loaders") or [],
                 }
         time.sleep(0.3)
         resp = session.get(
@@ -112,6 +134,8 @@ def _fetch_modrinth_info(mod_id):
                     "categories": hit.get("categories") or [],
                     "downloads": int(hit.get("downloads") or 0),
                     "slug": hit.get("slug") or "",
+                    "game_versions": hit.get("game_versions") or [],
+                    "loaders": hit.get("loaders") or [],
                 }
     except Exception:
         return None
@@ -134,6 +158,8 @@ def fetch_mod_info(mod_id, local_name="", local_category=""):
         "category": str(local_category or ""),
         "platform": "local",
         "downloads": 0,
+        "game_versions": [],
+        "loaders": [],
         "links": build_links(mod_id),
     }
 
@@ -158,6 +184,8 @@ def fetch_mod_info(mod_id, local_name="", local_category=""):
         info["name"] = modrinth.get("name") or info["name"]
         info["summary"] = modrinth.get("summary") or ""
         info["downloads"] = int(modrinth.get("downloads") or 0)
+        info["game_versions"] = list(modrinth.get("game_versions") or [])
+        info["loaders"] = list(modrinth.get("loaders") or [])
         categories = modrinth.get("categories") or []
         if categories:
             mapped = _mrc._map_categories(categories)
@@ -182,6 +210,12 @@ def format_mod_info(info):
     lines.append(f"信息来源: {platform}")
     if info.get("downloads"):
         lines.append(f"Modrinth 下载量: {info['downloads']:,}".replace(",", ","))
+    game_versions = [str(v) for v in (info.get("game_versions") or []) if str(v).strip()]
+    if game_versions:
+        lines.append(f"支持 MC 版本: {', '.join(game_versions[:8])}")
+    loaders = [str(l).capitalize() for l in (info.get("loaders") or []) if str(l).strip()]
+    if loaders:
+        lines.append(f"加载器: {', '.join(loaders[:6])}")
     links = info.get("links") or {}
     if links.get("mcmod"):
         lines.append(f"MC百科: {links['mcmod']}")
@@ -189,6 +223,18 @@ def format_mod_info(info):
         lines.append(f"Modrinth: {links['modrinth']}")
     if links.get("curseforge"):
         lines.append(f"CurseForge: {links['curseforge']}")
+    more = []
+    if links.get("ftbwiki"):
+        more.append(f"FTB Wiki: {links['ftbwiki']}")
+    if links.get("moddedminecraftwiki"):
+        more.append(f"ModdedMC Wiki: {links['moddedminecraftwiki']}")
+    if links.get("planetminecraft"):
+        more.append(f"Planet Minecraft: {links['planetminecraft']}")
+    if links.get("websearch"):
+        more.append(f"网页搜索: {links['websearch']}")
+    if more:
+        lines.append("更多链接:")
+        lines.extend(f"  {item}" for item in more)
     lines.append("")
     guide = (info.get("guide") or "").strip()
     summary = (info.get("summary") or "").strip()
