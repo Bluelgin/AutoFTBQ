@@ -1245,7 +1245,10 @@ class QuestBookGenerator:
                 for item in unfixable:
                     report_lines.append(f"  {item['id']} — {item['location']}")
                     report_lines.append(f"    原因: {item['reason']}")
-                report_lines.append("\n  建议: 手动在SNBT文件中替换为正确的物品ID")
+                    suggestions = item.get("suggestions") or []
+                    if suggestions:
+                        report_lines.append(f"    建议替代: {', '.join(suggestions)}")
+                report_lines.append("\n  建议: 优先使用「建议替代」中的真实物品ID，或手动在SNBT文件中替换")
             else:
                 report_lines.append("\n所有物品ID均已通过自动修正 ✓" if fix_count else "\n所有物品ID均已通过校验 ✓")
             report_path = os.path.join(base_dir, "id_validation_report.txt")

@@ -1949,6 +1949,23 @@ class App:
         if messagebox.askyesno(t("success_title"), t("success_msg", path) + summary):
             try: os.startfile(path)
             except Exception: subprocess.Popen(["explorer", path], shell=True)
+        # 若有无法自动修正的物品 ID，提示用户查看报告（报告含建议替代）
+        try:
+            import re as _re
+            report_path = os.path.join(path, "id_validation_report.txt")
+            if os.path.isfile(report_path):
+                with open(report_path, "r", encoding="utf-8") as handle:
+                    report_text = handle.read()
+                m = _re.search(r"无法修正:\s*(\d+)\s*个", report_text)
+                if m and int(m.group(1)) > 0:
+                    messagebox.showwarning(
+                        "物品ID提示",
+                        f"有 {int(m.group(1))} 个物品ID无法自动修正，已在任务书中保留原值。\n\n"
+                        f"请打开目录查看 id_validation_report.txt，\n"
+                        "报告会给出「建议替代」的真实物品ID，手动替换后更稳妥。",
+                    )
+        except (OSError, ValueError, AttributeError):
+            pass
 
     def _on_fail(self, msg):
         self.set_info(t("failed", msg), "error")
