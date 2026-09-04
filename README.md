@@ -29,6 +29,8 @@
 - **自定义 API 完整地址开关**：API URL 可以只填基础地址（如 `https://ark.cn-beijing.volces.com/api/coding/v3`），软件会自动补全为 `/chat/completions`；已包含完整地址时原样使用。模型列表 URL 也能从基础地址自动推导。
 - **缓解 Windows 安全中心误报**：打包默认禁用 UPX 压缩并写入正式版本信息；新增 `add_defender_exclusion.bat`，可一键把软件加入 Defender 白名单。
 - **生成进度保存**：分阶段生成时每完成一个章节都会写入 `generation_progress.json`；如果 Token/额度不足导致生成中断，已完成的部分任务书会自动保存为可用 SNBT，并在界面提示“部分生成完成”。
+- **记住已选 Mod**：选择的 Mod 会保存到 `config.json`，下次启动时自动恢复，不用重新勾选。
+- **MOD 信息查询窗口**：新增“📖 MOD 信息”按钮，窗口内直接查看每个已选 Mod 的名称、Mod ID、分类，以及来自 MC百科 / Modrinth 的简介和下载量，并可一键跳转 MC百科、Modrinth、CurseForge 页面。
 
 ## v1.3.9 更新
 
@@ -223,6 +225,17 @@ kubejs/
 
 一般不需要单独勾选 JEI、JourneyMap、依赖库等辅助 Mod。软件会尽量识别依赖和辅助内容，并把合适的物品放进相关任务或奖励中。
 
+勾选结果会保存到 `config.json`，下次启动时如果 Mod 文件夹没变，软件会自动恢复上次的选择，不用重新勾选。
+
+### 2.1 查看 MOD 信息（MC百科 / Modrinth）
+
+选好 Mod 后，点击“📖 MOD 信息”按钮打开信息窗口：
+
+- 左侧列出所有已选 Mod，点击任意一个即可在右侧查看详情。
+- 详情包括名称、Mod ID、分类，以及来自平台的简介；优先查询 **MC百科**（中文资料最全），查询不到时自动改用 **Modrinth** API（附下载量），都失败时展示本地已知资料。
+- 窗口左下角会显示当前信息来源；点击右下角“🌐 打开 MC百科”可一键跳到该 Mod 的 MC百科详情页（或搜索页）。
+- 信息窗口也提供了 Modrinth、CurseForge 的跳转链接，方便交叉比对不同平台资料。
+
 ### 3. 选择任务密度
 
 任务密度会影响每个章节的任务配额和 AI 调用次数：
@@ -382,6 +395,7 @@ ollama pull qwen2.5-coder:7b
 | `quest_layout.py` | 人工风格布局重排（主线/分支/信息任务） |
 | `quest_polish.py` | AI 文案润色管线（补丁式输出+结构校验） |
 | `polish_quests.py` | 命令行：对已有任务书重排/润色 |
+| `mod_info.py` | MOD 信息查询：MC百科 / Modrinth / 本地资料 + 平台跳转链接 |
 | `AutoFTBQ.spec` | PyInstaller 打包配置（禁用 UPX、内嵌版本信息） |
 | `version_info.txt` | exe 的版本资源文件（降低 Defender 误报） |
 | `add_defender_exclusion.bat` | 一键把软件加入 Windows 安全中心排除列表 |

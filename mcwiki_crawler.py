@@ -145,6 +145,7 @@ def _scrape_mod(mod_id):
 
         return {
             "name": name or mod_id,
+            "class_id": class_id,
             "items_summary": "",
             "guide_text": (brief[:300] + "\n" + guide_text) if guide_text else brief[:500],
         }
