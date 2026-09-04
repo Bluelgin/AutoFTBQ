@@ -10,10 +10,20 @@ import requests
 
 try:
     from . import ollama_adapter
-    from .ai_providers import PROVIDER_PRESETS, normalize_provider, resolve_provider_model
+    from .ai_providers import (
+        PROVIDER_PRESETS,
+        ensure_chat_completions_url,
+        normalize_provider,
+        resolve_provider_model,
+    )
 except ImportError:
     import ollama_adapter
-    from ai_providers import PROVIDER_PRESETS, normalize_provider, resolve_provider_model
+    from ai_providers import (
+        PROVIDER_PRESETS,
+        ensure_chat_completions_url,
+        normalize_provider,
+        resolve_provider_model,
+    )
 
 
 DEEPSEEK_API_URL = PROVIDER_PRESETS["DeepSeek"]["chat_url"]
@@ -61,11 +71,16 @@ class GenericOpenAIClient:
         timeout=API_TIMEOUT,
         omit_temperature=False,
         request_overrides=None,
+        auto_complete=True,
     ):
         if not api_url:
             raise ValueError("未配置 API URL")
         if not model:
             raise ValueError("未配置模型 ID")
+        if auto_complete:
+            # 允许输入基础地址（如 https://ark.cn-beijing.volces.com/api/coding/v3），
+            # 自动补全为完整的 /chat/completions 接口地址；已完整的地址原样保留。
+            api_url = ensure_chat_completions_url(api_url) or api_url
         self.api_url = api_url
         self.model = model
         self.timeout = timeout
@@ -226,7 +241,7 @@ class DeepSeekClient(GenericOpenAIClient):
         )
 
 
-def create_chat_client(engine, api_key=None, ollama_model=None, provider=None, api_url=None, api_model=None):
+def create_chat_client(engine, api_key=None, ollama_model=None, provider=None, api_url=None, api_model=None, auto_complete=True):
     """Create a client while keeping legacy engine names compatible."""
     if engine == "ollama":
         return ollama_adapter.OllamaClient(model=ollama_model or "qwen2.5-coder:7b")
@@ -250,4 +265,5 @@ def create_chat_client(engine, api_key=None, ollama_model=None, provider=None, a
         final_model,
         omit_temperature=preset.get("omit_temperature", False) if uses_preset else False,
         request_overrides=preset.get("request_overrides") if uses_preset else None,
+        auto_complete=auto_complete,
     )

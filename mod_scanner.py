@@ -726,30 +726,64 @@ def _levenshtein(a, b):
         prev = curr
     return prev[-1]
 
-def _find_best_match(target, all_items, ns):
-    """在指定命名空间中找最佳匹配物品ID"""
+def _normalize_item_key(name):
+    """归一化物品名用于比较：小写并去掉下划线/连字符/空格等分隔符差异。"""
+    return re.sub(r"[\s_-]+", "", str(name).lower())
+
+
+def _best_match_scores(target_item, pool):
+    """对目标物品名在候选池中评分，返回 [(item_id, score)] 按分数降序。
+
+    评分优先级：归一化后精确相等 > 子串包含 > 单复数 > 编辑距离。
+    """
+    target_norm = _normalize_item_key(target_item)
+    if not target_norm:
+        return []
+    scored = []
+    for pid in pool:
+        pid_item = pid.split(":", 1)[1] if ":" in pid else pid
+        pid_norm = _normalize_item_key(pid_item)
+        if not pid_norm:
+            continue
+        score = 0
+        if target_norm == pid_norm:
+            score = 1000
+        elif target_norm in pid_norm or pid_norm in target_norm:
+            # 子串包含：长度越接近得分越高
+            score = 500 + min(len(target_norm), len(pid_norm))
+        elif target_norm + "s" == pid_norm or target_norm == pid_norm + "s":
+            # 复数/单数（apple → apples）
+            score = 400
+        elif target_norm.endswith("s") and target_norm[:-1] == pid_norm:
+            score = 400
+        else:
+            dist = _levenshtein(target_norm, pid_norm)
+            if dist <= 3:
+                score = 100 - dist * 20
+        if score > 0:
+            scored.append((pid, score))
+    scored.sort(key=lambda x: (-x[1], x[0]))
+    return scored
+
+
+def _find_best_match(target, all_items, ns, top_k=3):
+    """在指定命名空间中找最佳匹配物品 ID。
+
+    返回 (best, suggestions, best_score)：
+      - best: 最高分匹配的真实物品 ID；无任何匹配则 None
+      - suggestions: 按相似度排序的候选 ID 列表（最多 top_k 个），供报告/界面提示
+      - best_score: 最高分，供调用方判断是否足够自信而自动修正
+    """
     target_item = target.split(":", 1)[1] if ":" in target else target
     pool = sorted(all_items.get(ns, {}).keys())
-    if not pool: return None
-
-    # Level 1: 前缀/子串匹配
-    for pid in pool:
-        pid_item = pid.split(":", 1)[1] if ":" in pid else pid
-        if target_item.lower() in pid_item.lower() or pid_item.lower() in target_item.lower():
-            return pid
-
-    # Level 2: 编辑距离 ≤ 3
-    best, best_dist = None, 999
-    for pid in pool:
-        pid_item = pid.split(":", 1)[1] if ":" in pid else pid
-        d = _levenshtein(target_item.lower(), pid_item.lower())
-        if d < best_dist:
-            best_dist = d
-            best = pid
-    if best_dist <= 3:
-        return best
-
-    return None
+    if not pool:
+        return None, [], 0
+    scored = _best_match_scores(target_item, pool)
+    if not scored:
+        return None, [], 0
+    best = scored[0][0]
+    suggestions = [item_id for item_id, _score in scored[:top_k]]
+    return best, suggestions, scored[0][1]
 
 def auto_fix_item_ids(quest_data, all_items):
     """
@@ -779,7 +813,7 @@ def auto_fix_item_ids(quest_data, all_items):
         if chi and ":" in chi:
             ns = chi.split(":", 1)[0]
             if ns != "minecraft" and not (ns in all_items and chi in all_items[ns]):
-                best = _find_best_match(chi, all_items, ns)
+                best, _sug, _score = _find_best_match(chi, all_items, ns)
                 if best:
                     print(f"[FIX] Chapter '{ch.get('title', '?')}' icon: {chi} → {best}")
                     ch["icon"] = best
@@ -794,7 +828,7 @@ def auto_fix_item_ids(quest_data, all_items):
             if qi_icon and ":" in qi_icon:
                 ns = qi_icon.split(":", 1)[0]
                 if ns != "minecraft" and not (ns in all_items and qi_icon in all_items[ns]):
-                    best = _find_best_match(qi_icon, all_items, ns)
+                    best, _sug, _score = _find_best_match(qi_icon, all_items, ns)
                     if best:
                         print(f"[FIX] Quest '{qtitle}' icon: {qi_icon} → {best}")
                         q["icon"] = best
@@ -820,15 +854,15 @@ def auto_fix_item_ids(quest_data, all_items):
                     continue
                 if ns in all_items and target in all_items[ns]:
                     continue  # 有效
-                best = _find_best_match(target, all_items, ns)
-                if best:
+                best, suggestions, best_score = _find_best_match(target, all_items, ns)
+                if best and best_score >= 400:
                     print(f"[FIX] Task '{qtitle}': {target} → {best}")
                     t["target"] = best
                     fix_count += 1
                 elif ns not in all_items:
-                    unfixable.append({"id": target, "location": f"Task in '{qtitle}'", "reason": f"Mod '{ns}' 不在已安装的 Mod 列表中，无法验证此 ID"})
+                    unfixable.append({"id": target, "location": f"Task in '{qtitle}'", "reason": f"Mod '{ns}' 不在已安装的 Mod 列表中，无法验证此 ID", "suggestions": []})
                 else:
-                    unfixable.append({"id": target, "location": f"Task in '{qtitle}'", "reason": f"在 '{ns}' 中找不到相似物品，ID 可能不存在"})
+                    unfixable.append({"id": target, "location": f"Task in '{qtitle}'", "reason": f"在 '{ns}' 中没有高置信匹配，保留原值待确认", "suggestions": suggestions})
 
             # 修正 rewards
             for r in q.get("rewards", []):
@@ -843,15 +877,15 @@ def auto_fix_item_ids(quest_data, all_items):
                     continue
                 if ns in all_items and target in all_items[ns]:
                     continue
-                best = _find_best_match(target, all_items, ns)
-                if best:
+                best, suggestions, best_score = _find_best_match(target, all_items, ns)
+                if best and best_score >= 400:
                     print(f"[FIX] Reward in '{qtitle}': {target} → {best}")
                     r["target"] = best
                     fix_count += 1
                 elif ns not in all_items:
-                    unfixable.append({"id": target, "location": f"Reward in '{qtitle}'", "reason": f"Mod '{ns}' 不在已安装的 Mod 列表中，无法验证此 ID"})
+                    unfixable.append({"id": target, "location": f"Reward in '{qtitle}'", "reason": f"Mod '{ns}' 不在已安装的 Mod 列表中，无法验证此 ID", "suggestions": []})
                 else:
-                    unfixable.append({"id": target, "location": f"Reward in '{qtitle}'", "reason": f"在 '{ns}' 中找不到相似物品，ID 可能不存在"})
+                    unfixable.append({"id": target, "location": f"Reward in '{qtitle}'", "reason": f"在 '{ns}' 中没有高置信匹配，保留原值待确认", "suggestions": suggestions})
 
     return fixed, fix_count, unfixable
 

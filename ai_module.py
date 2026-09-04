@@ -49,6 +49,7 @@ try:
         repair_json_with_ai,
     )
     from .quest_generation import (
+        GenerationInterrupted,
         StagedGenerationHooks,
         StagedGenerationService,
         calculate_max_tokens,
@@ -104,6 +105,7 @@ except ImportError:
         repair_json_with_ai,
     )
     from quest_generation import (
+        GenerationInterrupted,
         StagedGenerationHooks,
         StagedGenerationService,
         calculate_max_tokens,
@@ -615,7 +617,8 @@ class QuestBookGenerator:
     def __init__(self, api_key=None, selected_mods=None, mod_folder=None,
                  progress_callback=None, lang="zh", engine="deepseek",
                  ollama_model=None, provider=None, api_url=None, api_model=None,
-                 max_output_tokens=None, polish_after_generate=False):
+                 max_output_tokens=None, polish_after_generate=False,
+                 auto_complete=True):
         # 根据引擎创建客户端
         self.engine = engine
         self.client = create_chat_client(
@@ -625,6 +628,7 @@ class QuestBookGenerator:
             provider=provider,
             api_url=api_url,
             api_model=api_model,
+            auto_complete=auto_complete,
         )
         self.all_mods = selected_mods or []
         self.mod_folder = mod_folder
@@ -759,10 +763,110 @@ class QuestBookGenerator:
                 wiki_text += "\n"
             wiki_text += "=== 玩法说明（人工提炼）===" + "\n".join(playstyle_lines)
         self._progress("生成丰富的任务书JSON (含支线/主线)...", 15)
-        quest_json_text = self._generate_questbook(mod_list, all_ns, item_catalog, wiki_text)
+
+        # 生成进度保存：每完成一个章节立即写入检查点文件；
+        # 若中途 Token/额度不足导致中断，也能把已生成的部分任务书保存下来。
+        base_dir = self._resolve_output_base_dir(output_dir)
+        checkpoint_path = os.path.join(base_dir, "generation_progress.json")
+        try:
+            quest_json_text = self._generate_questbook(
+                mod_list, all_ns, item_catalog, wiki_text, checkpoint_path=checkpoint_path
+            )
+        except GenerationInterrupted as exc:
+            return self._save_partial_questbook(exc, base_dir, scanned_items)
+        else:
+            self._cleanup_checkpoint(checkpoint_path)
         self._progress("解析并校验物品ID...", 80)
-        saved_dir = self._save_snbt_files(quest_json_text, scanned_items, output_dir)
+        saved_dir = self._save_snbt_files(quest_json_text, scanned_items, base_dir)
         self._progress("完成!", 100)
+        return saved_dir
+
+    def _resolve_output_base_dir(self, output_dir=None):
+        """Resolve the actual output directory (user override or app default)."""
+        SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+        if output_dir:
+            return os.path.abspath(os.path.expanduser(output_dir))
+        return os.path.join(application_dir(SCRIPT_DIR), OUTPUT_DIR_NAME)
+
+    def _cleanup_checkpoint(self, checkpoint_path):
+        """Remove the checkpoint file once the full quest book has been saved."""
+        if not checkpoint_path:
+            return
+        try:
+            if os.path.isfile(checkpoint_path):
+                os.remove(checkpoint_path)
+                print(f"[CHECKPOINT] 已完成生成，清理进度文件: {checkpoint_path}")
+        except OSError as exc:
+            print(f"[CHECKPOINT] 清理进度文件失败: {exc}")
+
+    def _save_partial_questbook(self, interrupted, base_dir, scanned_items=None):
+        """Token/额度不足导致中断时，把已生成的部分任务书保存为可用 SNBT。"""
+        quest_json_text = interrupted.partial_json
+        os.makedirs(base_dir, exist_ok=True)
+        with open(os.path.join(base_dir, "ai_raw_output.txt"), "w", encoding="utf-8") as f:
+            f.write(quest_json_text)
+
+        ai_data, json_text = parse_json_document(quest_json_text)
+        if ai_data is None:
+            with open(os.path.join(base_dir, "parse_error.txt"), "w", encoding="utf-8") as f:
+                f.write(f"=== 中断时已保存的部分内容 ===\n{quest_json_text}\n\n=== 提取后的JSON ===\n{json_text}")
+            self._progress("中断时没有可用的章节数据，已保留原始内容", 90)
+            raise Exception(
+                f"生成中断（{interrupted.reason}），且已完成章节无法解析。"
+                f"原始内容已保存到 {os.path.join(base_dir, 'ai_raw_output.txt')}"
+            )
+
+        ai_data, schema_issues = normalize_quest_book(ai_data)
+        for issue in schema_issues:
+            print(f"[SCHEMA] {issue}")
+        ai_data, _ = self._deduplicate_quests(ai_data)
+        if scanned_items:
+            ai_data, _fix_count, _unfixable = _ms.auto_fix_item_ids(ai_data, scanned_items)
+        self._annotate_chapter_groups(ai_data)
+        try:
+            relayout_quest_book(ai_data)
+        except Exception as exc:
+            print(f"[LAYOUT] 布局重排失败（不影响保存）: {exc}")
+        # 尽力做一次质量补全；即使不通过也继续保存，避免丢失已完成内容。
+        quality = None
+        try:
+            quality = repair_and_validate_quest_book(ai_data, scanned_items or {})
+        except Exception as exc:
+            print(f"[QUALITY] 部分任务书质量检查异常（继续保存）: {exc}")
+
+        saved_dir = self._write_snbt_files(base_dir, ai_data)
+        chapter_dir = os.path.join(base_dir, "chapters")
+        generated_chapters = [
+            name for name in os.listdir(chapter_dir)
+            if name.endswith(".snbt") and name != "ZZZZZZZZZZZZZZZZ.snbt"
+        ]
+        if not generated_chapters or not os.path.isfile(os.path.join(base_dir, "data.snbt")):
+            raise Exception(
+                f"生成中断（{interrupted.reason}），且没有可保存的章节。"
+                f"原始内容已保存到 {os.path.join(base_dir, 'ai_raw_output.txt')}"
+            )
+
+        # 写入部分保存标记，主界面据此提示“部分生成完成”。
+        report_lines = [
+            "=== 部分生成结果 ===",
+            f"中断原因: {interrupted.reason}",
+            f"已完成章节: {interrupted.completed_chapters} / {interrupted.total_chapters}",
+            f"本次保存章节数: {len(ai_data.get('chapters', []))}",
+            "说明: 生成过程中 Token/额度不足，已把完成的部分保存为可用任务书。",
+            "可在 Token 充足后重新生成，或将本目录内容直接导入游戏。",
+        ]
+        if quality is not None:
+            try:
+                quality_first_line = quality_report_text(quality).splitlines()[0] if quality_report_text(quality) else ""
+            except Exception:
+                quality_first_line = ""
+            report_lines.append(f"质量检查: {quality_first_line}")
+        with open(os.path.join(base_dir, "partial_report.txt"), "w", encoding="utf-8") as f:
+            f.write("\n".join(report_lines))
+        self._progress(
+            f"已保存部分任务书（{interrupted.completed_chapters}/{interrupted.total_chapters} 章节）",
+            100,
+        )
         return saved_dir
 
     def _build_mod_list(self):
@@ -966,7 +1070,7 @@ class QuestBookGenerator:
     def _normalize_chapter_quests(self, chapter_id, quests):
         return normalize_chapter_quests(chapter_id, quests)
 
-    def _generate_questbook_staged(self, wiki_text=""):
+    def _generate_questbook_staged(self, wiki_text="", checkpoint_path=None):
         hooks = StagedGenerationHooks(
             build_plan=self._build_generation_plan,
             build_catalog=self._chapter_catalog,
@@ -985,12 +1089,13 @@ class QuestBookGenerator:
             getattr(self, "density", "medium"),
             self._progress,
             hooks,
+            checkpoint_path=checkpoint_path,
         )
         return service.generate(wiki_text)
 
-    def _generate_questbook(self, mod_list, all_ns, item_catalog="", wiki_text=""):
+    def _generate_questbook(self, mod_list, all_ns, item_catalog="", wiki_text="", checkpoint_path=None):
         """Generate only in deterministic batches so density remains enforceable."""
-        return self._generate_questbook_staged()
+        return self._generate_questbook_staged(wiki_text, checkpoint_path)
 
     def _generate_questbook_legacy(self, mod_list, all_ns, item_catalog="", wiki_text=""):
         """Original whole-book generation pipeline retained as a compatibility fallback."""
@@ -1085,12 +1190,7 @@ class QuestBookGenerator:
         return full_content
 
     def _save_snbt_files(self, quest_json_text, scanned_items=None, output_dir=None):
-        SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-        base_dir = (
-            os.path.abspath(os.path.expanduser(output_dir))
-            if output_dir
-            else os.path.join(application_dir(SCRIPT_DIR), OUTPUT_DIR_NAME)
-        )
+        base_dir = self._resolve_output_base_dir(output_dir)
         os.makedirs(base_dir, exist_ok=True)
         chapters_dir = os.path.join(base_dir, "chapters")
         os.makedirs(chapters_dir, exist_ok=True)
@@ -1145,7 +1245,10 @@ class QuestBookGenerator:
                 for item in unfixable:
                     report_lines.append(f"  {item['id']} — {item['location']}")
                     report_lines.append(f"    原因: {item['reason']}")
-                report_lines.append("\n  建议: 手动在SNBT文件中替换为正确的物品ID")
+                    suggestions = item.get("suggestions") or []
+                    if suggestions:
+                        report_lines.append(f"    建议替代: {', '.join(suggestions)}")
+                report_lines.append("\n  建议: 优先使用「建议替代」中的真实物品ID，或手动在SNBT文件中替换")
             else:
                 report_lines.append("\n所有物品ID均已通过自动修正 ✓" if fix_count else "\n所有物品ID均已通过校验 ✓")
             report_path = os.path.join(base_dir, "id_validation_report.txt")
@@ -1331,7 +1434,7 @@ def generate_quest_book(api_key=None, selected_mods=None, mod_folder=None,
                          ollama_model=None, output_dir=None, use_wiki=False,
                          provider=None, api_url=None, api_model=None,
                          density="medium", max_output_tokens=None,
-                         polish_after_generate=False):
+                         polish_after_generate=False, auto_complete=True):
     if progress_callback: progress_callback("分析选中的Mod...",3)
     if not selected_mods: raise Exception("未选中任何Mod。")
     gen = QuestBookGenerator(
@@ -1340,7 +1443,8 @@ def generate_quest_book(api_key=None, selected_mods=None, mod_folder=None,
         ollama_model=ollama_model, provider=provider,
         api_url=api_url, api_model=api_model,
         max_output_tokens=max_output_tokens,
-        polish_after_generate=polish_after_generate
+        polish_after_generate=polish_after_generate,
+        auto_complete=auto_complete,
     )
     gen.use_wiki = use_wiki
     gen.density = density

@@ -246,7 +246,7 @@ class ModSelectDialog(tk.Toplevel):
     def __init__(self, parent, mods, selected_filenames=None):
         super().__init__(parent)
         self.title("选择要生成任务书的 Mod")
-        self.geometry("680x540")
+        self.geometry("940x600")
         self.resizable(False, False)
         self.configure(bg="#ffffff")
         self.result = []
@@ -254,15 +254,26 @@ class ModSelectDialog(tk.Toplevel):
         self._visible_mods = []
         self._selected_filenames = set(selected_filenames or [])
         self._rebuilding = False
+        self._current_preview_mod = None
+        self._preview_request_id = 0
+        self._preview_links = {}
 
         try:
             tk.Label(self, text="勾选要包含在任务书中的 Mod：",
                      font=("Microsoft YaHei", 12, "bold"), bg="#ffffff", fg="#333333").pack(pady=(15, 5))
-            tk.Label(self, text=f"检测到 {len(mods)} 个Mod — 请选择需要的Mod（可多选）",
-                     font=("Microsoft YaHei", 9), bg="#ffffff", fg="#888888").pack(pady=(0, 10))
+            tk.Label(self, text=f"检测到 {len(mods)} 个Mod — 点击左侧 Mod，右侧显示 MC百科 / Modrinth 信息（可多选）",
+                     font=("Microsoft YaHei", 9), bg="#ffffff", fg="#888888").pack(pady=(0, 8))
 
-            search_frame = tk.Frame(self, bg="#ffffff")
-            search_frame.pack(fill=tk.X, padx=20, pady=(0, 8))
+            body = tk.Frame(self, bg="#ffffff")
+            body.pack(fill=tk.BOTH, expand=True, padx=20, pady=(0, 10))
+
+            # ── 左侧：搜索 + 列表 ──
+            left = tk.Frame(body, bg="#ffffff", width=450)
+            left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            left.pack_propagate(False)
+
+            search_frame = tk.Frame(left, bg="#ffffff")
+            search_frame.pack(fill=tk.X, pady=(0, 8))
             tk.Label(
                 search_frame,
                 text="搜索 Mod：",
@@ -288,26 +299,46 @@ class ModSelectDialog(tk.Toplevel):
                 padx=8,
             ).pack(side=tk.LEFT, padx=(8, 0))
 
-            frame = tk.Frame(self, bg="#ffffff")
-            frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=(0, 10))
-            scrollbar = tk.Scrollbar(frame)
+            list_frame = tk.Frame(left, bg="#ffffff")
+            list_frame.pack(fill=tk.BOTH, expand=True)
+            scrollbar = tk.Scrollbar(list_frame)
             scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-            self._lb = tk.Listbox(frame, selectmode="multiple", yscrollcommand=scrollbar.set,
+            self._lb = tk.Listbox(list_frame, selectmode="multiple", yscrollcommand=scrollbar.set,
                                   font=("Microsoft YaHei", 9), bg="#ffffff", fg="#333333",
                                   activestyle="none", exportselection=False)
             self._lb.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
             scrollbar.config(command=self._lb.yview)
             self._lb.bind("<<ListboxSelect>>", self._on_listbox_select)
+            self._lb.bind("<Button-1>", self._on_listbox_click, add="+")
 
             self._count_label = tk.Label(
-                self,
+                left,
                 text="",
                 font=("Microsoft YaHei", 9),
                 bg="#ffffff",
                 fg="#666666",
                 anchor="w",
             )
-            self._count_label.pack(fill=tk.X, padx=20, pady=(0, 8))
+            self._count_label.pack(fill=tk.X, pady=(6, 0))
+
+            # ── 右侧：MOD 信息预览 ──
+            right = tk.Frame(body, bg="#ffffff", width=430)
+            right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(12, 0))
+            right.pack_propagate(False)
+            tk.Label(right, text="MOD 信息（MC百科 / Modrinth）", font=("Microsoft YaHei", 10, "bold"),
+                     fg="#333333", bg="#ffffff").pack(anchor=tk.W, pady=(0, 6))
+            self._preview_text = tk.Text(right, font=("Microsoft YaHei", 9), bg="#f8f9ff", fg="#333333",
+                                         bd=1, relief=tk.SOLID, wrap=tk.WORD, state=tk.DISABLED)
+            self._preview_text.pack(fill=tk.BOTH, expand=True)
+            bottom_row = tk.Frame(right, bg="#ffffff")
+            bottom_row.pack(fill=tk.X, pady=(4, 0))
+            self._preview_status = tk.Label(bottom_row, text="点击左侧 Mod 查看信息", font=("Microsoft YaHei", 8),
+                                            fg="#888888", bg="#ffffff", anchor="w")
+            self._preview_status.pack(side=tk.LEFT, fill=tk.X, expand=True)
+            self._preview_open_btn = tk.Button(bottom_row, text="🌐 打开 MC百科", font=("Microsoft YaHei", 8),
+                                               command=self._open_preview_link, bg="#e3f2fd", fg="#1565c0",
+                                               bd=1, relief=tk.SOLID, cursor="hand2", state=tk.DISABLED)
+            self._preview_open_btn.pack(side=tk.RIGHT)
 
             self._search_var.trace_add("write", self._on_search_changed)
             self._rebuild_list()
@@ -385,6 +416,102 @@ class ModSelectDialog(tk.Toplevel):
     def _on_listbox_select(self, _event=None):
         self._sync_visible_selection()
         self._update_count()
+        # 键盘/程序选择：预览最后激活的项
+        try:
+            sel = self._lb.curselection()
+            if sel:
+                self._show_preview(self._visible_mods[sel[-1]])
+        except Exception:
+            pass
+
+    def _on_listbox_click(self, event):
+        """鼠标点击列表项：切换勾选的同时预览该项的 MOD 信息。"""
+        try:
+            index = self._lb.nearest(event.y)
+            if 0 <= index < len(self._visible_mods):
+                self._show_preview(self._visible_mods[index])
+        except Exception:
+            pass
+
+    def _set_preview_text(self, text):
+        self._preview_text.config(state=tk.NORMAL)
+        self._preview_text.delete("1.0", tk.END)
+        self._preview_text.insert("1.0", text)
+        self._preview_text.config(state=tk.DISABLED)
+
+    def _show_preview(self, mod):
+        """点击列表项时，右侧立即展示本地信息，同时异步拉取平台详情。"""
+        self._current_preview_mod = mod
+        mod_id = mod.get("mod_id", "")
+        name = mod.get("mod_name", mod_id)
+        cat_cn = CAT_LABEL.get(mod.get("category", "unknown"), mod.get("category", "?"))
+        self._set_preview_text(
+            f"【{name}】\n"
+            f"Mod ID: {mod_id}\n"
+            f"分类: {cat_cn}\n\n"
+            "正在从 MC百科 / Modrinth 获取详情，请稍候..."
+        )
+        self._preview_status.config(text="查询中...", fg="#ff9800")
+        self._preview_open_btn.config(state=tk.DISABLED)
+        self._preview_request_id += 1
+        request_id = self._preview_request_id
+        threading.Thread(
+            target=self._preview_thread,
+            args=(request_id, mod),
+            daemon=True,
+        ).start()
+
+    def _preview_thread(self, request_id, mod):
+        try:
+            import mod_info
+            info = mod_info.fetch_mod_info(
+                mod.get("mod_id", ""),
+                local_name=mod.get("mod_name", ""),
+                local_category=mod.get("category", ""),
+            )
+            text = mod_info.format_mod_info(info)
+        except Exception as exc:
+            info = None
+            text = (
+                f"【{mod.get('mod_name', '?')}】\n"
+                f"Mod ID: {mod.get('mod_id', '?')}\n\n"
+                f"查询失败: {exc}\n\n可点击下方「打开 MC百科」手动查询。"
+            )
+        self.after(0, self._on_preview_result, request_id, info, text)
+
+    def _on_preview_result(self, request_id, info, text):
+        if request_id != self._preview_request_id:
+            return  # 用户已切到其他 Mod
+        self._set_preview_text(text)
+        if info and isinstance(info, dict):
+            platform = info.get("platform", "")
+            if platform == "mcmod":
+                self._preview_status.config(text="来源: MC百科", fg="#4caf50")
+            elif platform == "modrinth":
+                self._preview_status.config(text="来源: Modrinth", fg="#4caf50")
+            else:
+                self._preview_status.config(text="未获取到平台资料（可打开链接查询）", fg="#c77700")
+            self._preview_links = info.get("links") or {}
+            self._preview_open_btn.config(state=tk.NORMAL)
+        else:
+            self._preview_links = {}
+            self._preview_open_btn.config(state=tk.NORMAL)
+            self._preview_status.config(text="查询失败", fg="#f44336")
+
+    def _open_preview_link(self):
+        """打开当前预览 Mod 的 MC百科页面（详情页或搜索页）。"""
+        mod = getattr(self, "_current_preview_mod", None)
+        links = getattr(self, "_preview_links", None) or {}
+        url = links.get("mcmod") or ""
+        if not url and mod:
+            mod_id = mod.get("mod_id", "")
+            url = f"https://search.mcmod.cn/s?key={mod_id}"
+        if not url:
+            return
+        try:
+            webbrowser.open(url)
+        except Exception:
+            subprocess.Popen(["explorer", url], shell=True)
 
     def _select_all(self):
         for mod in self._visible_mods:
@@ -522,6 +649,9 @@ class App:
         self.api_url_var = tk.StringVar(value=self.config.get("api_url", ""))
         self.api_model_var = tk.StringVar(value=self.config.get("api_model", ""))
         self.models_url_var = tk.StringVar(value=self.config.get("models_url", ""))
+        self.auto_complete_url_var = tk.BooleanVar(
+            value=bool(self.config.get("api_url_auto_complete", True))
+        )
         self._fetched_models = []  # 缓存已获取的模型列表
         self._model_request_id = 0
         self._active_provider = None
@@ -586,7 +716,70 @@ class App:
         else:
             self.set_info(t("deps_missing"), "error")
             self.root.after(100, lambda: messagebox.showwarning(t("dep_error_title"), AI_IMPORT_ERROR))
+        if ok:
+            self._restore_selected_mods()
         self._check_config_ready()
+
+    def _restore_selected_mods(self):
+        """启动时自动检查上次的 Mod 文件夹：扫描 MOD 文件并恢复已选 Mod。
+
+        只要 config 里保存过有效的 Mod 文件夹，启动就会自动扫描其中的
+        .jar/.zip 并显示数量，用户无需重新浏览选择文件夹；
+        文件夹未变化时还会按文件名恢复上次勾选的 Mod。
+        """
+        current_folder = self.mod_folder_var.get().strip()
+        if not current_folder or not os.path.isdir(current_folder):
+            return
+        saved = self.config.get("selected_mods") or []
+        saved_folder = self.config.get("selected_mods_folder") or ""
+        try:
+            same_folder = os.path.normcase(os.path.abspath(saved_folder)) == os.path.normcase(
+                os.path.abspath(current_folder)
+            )
+        except Exception:
+            same_folder = False
+        if not same_folder:
+            saved = []  # 文件夹已变化：只扫描，不恢复旧选择
+
+        def _scan():
+            try:
+                mods = scan_mod_folder(current_folder)
+            except Exception:
+                mods = []
+            self.root.after(0, self._apply_restored_mods, mods, list(saved))
+
+        threading.Thread(target=_scan, daemon=True).start()
+
+    def _apply_restored_mods(self, mods, saved):
+        saved_set = set(saved or [])
+        self._detected_mods = mods
+        self.selected_mods = [m for m in mods if m.get("filename") in saved_set]
+        n = len(self.selected_mods)
+        total = len(mods)
+        if n:
+            self.mod_status_label.config(
+                text=f"检测到 {total} 个Mod  |  已选: {n}", fg="#4caf50"
+            )
+        elif total:
+            # 没有可恢复的选择：自动扫描结果已就绪，提示用户直接勾选
+            self.mod_status_label.config(
+                text=f"检测到 {total} 个Mod  |  已选: 0", fg="#888888"
+            )
+        else:
+            self.mod_status_label.config(text="检测到 0 个Mod  |  已选: 0", fg="#888888")
+        if hasattr(self, 'save_prompt_api_btn'):
+            self.save_prompt_api_btn.config(state=tk.NORMAL if n > 0 else tk.DISABLED)
+        self._check_config_ready()
+        # 恢复/扫描提示放在最后，避免被 _check_config_ready 的默认提示覆盖
+        if n:
+            self.set_info(f"已恢复上次选择的 {n} 个Mod", "success")
+        elif total:
+            self.set_info(
+                f"已自动扫描 {total} 个Mod，点击「选择 Mod」勾选即可，无需重新选择文件夹",
+                "info",
+            )
+        else:
+            self.set_info("文件夹中没有检测到 .jar/.zip Mod 文件", "warning")
 
     def _load_config(self):
         if os.path.exists(CONFIG_PATH):
@@ -620,6 +813,7 @@ class App:
         self.config["api_url"] = self.api_url_var.get().strip()
         self.config["api_model"] = self.api_model_var.get().strip()
         self.config["models_url"] = self.models_url_var.get().strip()
+        self.config["api_url_auto_complete"] = bool(self.auto_complete_url_var.get())
         self.config["ollama_model"] = self.ollama_model_var.get()
         self.config["density"] = self.density_var.get()
         self.config["max_output_tokens"] = self.max_output_tokens_var.get().strip()
@@ -631,6 +825,11 @@ class App:
             self.root.winfo_width(),
             self.root.winfo_height(),
         ]
+        # 记住本次选择的 Mod（文件名列表），下次启动自动恢复
+        self.config["selected_mods"] = [
+            m.get("filename", "") for m in self.selected_mods
+        ]
+        self.config["selected_mods_folder"] = self.mod_folder_var.get().strip()
         try:
             with open(CONFIG_PATH, "w", encoding="utf-8") as f: json.dump(self.config, f, ensure_ascii=False, indent=4)
             return True
@@ -722,7 +921,7 @@ class App:
                 self.api_url_var.set("")
             self.api_url_entry.config(state=tk.NORMAL, bg="#ffffff", fg="#333333")
             self.api_url_label.config(text="API URL:", fg="#555555")
-            self.api_url_hint_label.config(text="填写 OpenAI 兼容的 chat/completions 接口地址", fg="#888888")
+            self.api_url_hint_label.config(text="可填完整地址或基础地址（未含 /chat/completions 时自动补全）", fg="#888888")
         else:
             # 预设服务商：自动填入URL并设为只读
             chat_url = preset.get("chat_url", "")
@@ -741,6 +940,16 @@ class App:
                 self.models_url_row.pack_forget()
                 # 预设服务商清空自定义 models_url（用预设的）
                 self.models_url_var.set("")
+
+        # ── API 完整地址开关行：仅第三方自定义时显示 ──
+        if hasattr(self, 'auto_complete_row'):
+            if is_custom:
+                self.auto_complete_row.pack(
+                    fill=tk.X, pady=(0, 4),
+                    after=self.models_url_row if hasattr(self, 'models_url_row') else self.api_url_entry.master,
+                )
+            else:
+                self.auto_complete_row.pack_forget()
 
         # ── 服务商特定提示 ──
         if hasattr(self, 'provider_hint_label'):
@@ -1198,7 +1407,20 @@ class App:
         tk.Label(self.models_url_row, text="留空自动推导", font=("Microsoft YaHei", 7),
                  fg="#aaaaaa", bg="#ffffff").pack(side=tk.LEFT, padx=(4, 0))
 
-        # Row 2c: 服务商特定提示（如火山引擎的 Endpoint ID 提示）
+        # Row 2c: API 完整地址开关（仅第三方自定义时显示）
+        self.auto_complete_row = tk.Frame(self.provider_frame, bg="#ffffff")
+        self.auto_complete_check = tk.Checkbutton(
+            self.auto_complete_row,
+            text="自动补全 /chat/completions（基础地址自动补全，如 .../api/coding/v3 → .../v3/chat/completions）",
+            variable=self.auto_complete_url_var,
+            font=("Microsoft YaHei", 8),
+            fg="#666666", bg="#ffffff", activebackground="#ffffff",
+            selectcolor="#ffffff", command=self._save_config,
+        )
+        self.auto_complete_check.pack(side=tk.LEFT, anchor=tk.W)
+        # 默认不 pack，_on_provider_change 会控制显示
+
+        # Row 2d: 服务商特定提示（如火山引擎的 Endpoint ID 提示）
         self.provider_hint_label = tk.Label(self.provider_frame, text="", font=("Microsoft YaHei", 8),
                                              fg="#e65100", bg="#fff8e1", wraplength=680, justify=tk.LEFT,
                                              anchor=tk.W)
@@ -1332,13 +1554,14 @@ class App:
                     detected_output = suggested_output_dir(folder)
                     if detected_output:
                         self.output_dir_var.set(detected_output)
-                        self._save_config()
                 if n:
                     self.set_info(t("found_mods", n), "success")
                 else:
                     self.set_info(t("no_mods"), "warning")
             except Exception as e:
                 self.set_info(f"{t('dir_error')}: {e}", "error")
+            # 立即记住新文件夹，下次启动自动扫描恢复
+            self._save_config()
             self._check_config_ready()
 
     def _open_mod_select(self):
@@ -1366,6 +1589,7 @@ class App:
             self.mod_status_label.config(text=f"检测到 {len(self._detected_mods)} 个Mod  |  已选: {n}", fg="#4caf50" if n else "#888888")
             if n > 0 and hasattr(self, 'save_prompt_api_btn'):
                 self.save_prompt_api_btn.config(state=tk.NORMAL)
+            self._save_config()
         self._check_config_ready()
 
     def _refresh_text(self):
@@ -1479,6 +1703,8 @@ class App:
                 self.use_wiki_check.config(state=s)
             if hasattr(self, 'polish_after_generate_check'):
                 self.polish_after_generate_check.config(state=s)
+            if hasattr(self, 'auto_complete_check'):
+                self.auto_complete_check.config(state=s)
             # URL 字段：解锁时恢复到供应商对应的状态
             if hasattr(self, 'api_url_entry'):
                 if locked:
@@ -1645,11 +1871,12 @@ class App:
             "density": self.density_var.get(),
             "max_output_tokens": int(self.max_output_tokens_var.get().strip()) if self.max_output_tokens_var.get().strip() else None,
             "polish_after_generate": bool(self.polish_after_generate_var.get()),
+            "auto_complete": bool(self.auto_complete_url_var.get()),
         }, daemon=True).start()
 
     def _generate_thread(self, api_key, selected_mods, lang, engine, ollama_model, output_dir, use_wiki=False,
                          provider=None, api_url=None, api_model=None, density="medium",
-                         max_output_tokens=None, polish_after_generate=False):
+                         max_output_tokens=None, polish_after_generate=False, auto_complete=True):
         try:
             mf = self.mod_folder_var.get().strip()
             out = generate_quest_book(
@@ -1659,7 +1886,8 @@ class App:
                 use_wiki=use_wiki, provider=provider, api_url=api_url, api_model=api_model,
                 density=density,
                 max_output_tokens=max_output_tokens,
-                polish_after_generate=polish_after_generate
+                polish_after_generate=polish_after_generate,
+                auto_complete=auto_complete,
             )
             self._generation_events.put(("done", out, None))
         except Exception as e:
@@ -1681,6 +1909,25 @@ class App:
             self.progress_bar["value"] = 100
         if hasattr(self, 'progress_label'):
             self.progress_label.config(text="Done!")
+        # 生成中断（如 Token/额度不足）时保存的部分任务书：以警告形式提示
+        partial_path = os.path.join(path, "partial_report.txt")
+        if os.path.isfile(partial_path):
+            self.set_info("部分生成完成 - 已完成章节已保存", "warning")
+            detail = ""
+            try:
+                with open(partial_path, "r", encoding="utf-8") as handle:
+                    detail = handle.read().strip()
+            except OSError:
+                pass
+            if messagebox.askyesno(
+                "部分生成完成",
+                f"生成过程中断（可能是 Token 不足或额度用尽）。\n\n"
+                f"已完成的部分任务书已保存到:\n{path}\n\n"
+                f"{detail}\n\n打开目录查看？",
+            ):
+                try: os.startfile(path)
+                except Exception: subprocess.Popen(["explorer", path], shell=True)
+            return
         summary = ""
         try:
             quality_path = os.path.join(path, "quality_report.txt")
@@ -1702,6 +1949,23 @@ class App:
         if messagebox.askyesno(t("success_title"), t("success_msg", path) + summary):
             try: os.startfile(path)
             except Exception: subprocess.Popen(["explorer", path], shell=True)
+        # 若有无法自动修正的物品 ID，提示用户查看报告（报告含建议替代）
+        try:
+            import re as _re
+            report_path = os.path.join(path, "id_validation_report.txt")
+            if os.path.isfile(report_path):
+                with open(report_path, "r", encoding="utf-8") as handle:
+                    report_text = handle.read()
+                m = _re.search(r"无法修正:\s*(\d+)\s*个", report_text)
+                if m and int(m.group(1)) > 0:
+                    messagebox.showwarning(
+                        "物品ID提示",
+                        f"有 {int(m.group(1))} 个物品ID无法自动修正，已在任务书中保留原值。\n\n"
+                        f"请打开目录查看 id_validation_report.txt，\n"
+                        "报告会给出「建议替代」的真实物品ID，手动替换后更稳妥。",
+                    )
+        except (OSError, ValueError, AttributeError):
+            pass
 
     def _on_fail(self, msg):
         self.set_info(t("failed", msg), "error")
@@ -1760,10 +2024,14 @@ class App:
             self._update_checking = False
 
     def _on_update_result(self, latest_ver, update_info=None):
+        # 先在函数体内归一化 update_info：若在嵌套函数 _show_dialog 中
+        # 执行 “update_info = update_info or {}”，赋值会让 update_info
+        # 变成内层局部变量，右侧引用未赋值变量会抛 UnboundLocalError。
+        update_info = dict(update_info or {})
+
         def _show_dialog():
             self._update_checking = False
             self._update_checked = True
-            update_info = update_info or {}
             if not latest_ver:
                 if update_info.get("error"):
                     self.update_label.config(text="更新检查失败（点击重试）", fg="#c77700")

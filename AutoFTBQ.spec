@@ -56,7 +56,8 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    # UPX 压缩是微软 Defender 误报的常见触发点，禁用可显著降低误报概率。
+    upx=False,
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,
@@ -65,4 +66,6 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    # 写入版本资源，让程序在 Windows 属性中显示作者/版本信息，降低启发式误报。
+    version='version_info.txt',
 )
