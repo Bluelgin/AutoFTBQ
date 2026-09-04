@@ -246,7 +246,7 @@ class ModSelectDialog(tk.Toplevel):
     def __init__(self, parent, mods, selected_filenames=None):
         super().__init__(parent)
         self.title("选择要生成任务书的 Mod")
-        self.geometry("680x540")
+        self.geometry("940x600")
         self.resizable(False, False)
         self.configure(bg="#ffffff")
         self.result = []
@@ -254,15 +254,26 @@ class ModSelectDialog(tk.Toplevel):
         self._visible_mods = []
         self._selected_filenames = set(selected_filenames or [])
         self._rebuilding = False
+        self._current_preview_mod = None
+        self._preview_request_id = 0
+        self._preview_links = {}
 
         try:
             tk.Label(self, text="勾选要包含在任务书中的 Mod：",
                      font=("Microsoft YaHei", 12, "bold"), bg="#ffffff", fg="#333333").pack(pady=(15, 5))
-            tk.Label(self, text=f"检测到 {len(mods)} 个Mod — 请选择需要的Mod（可多选）",
-                     font=("Microsoft YaHei", 9), bg="#ffffff", fg="#888888").pack(pady=(0, 10))
+            tk.Label(self, text=f"检测到 {len(mods)} 个Mod — 点击左侧 Mod，右侧显示 MC百科 / Modrinth 信息（可多选）",
+                     font=("Microsoft YaHei", 9), bg="#ffffff", fg="#888888").pack(pady=(0, 8))
 
-            search_frame = tk.Frame(self, bg="#ffffff")
-            search_frame.pack(fill=tk.X, padx=20, pady=(0, 8))
+            body = tk.Frame(self, bg="#ffffff")
+            body.pack(fill=tk.BOTH, expand=True, padx=20, pady=(0, 10))
+
+            # ── 左侧：搜索 + 列表 ──
+            left = tk.Frame(body, bg="#ffffff", width=450)
+            left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            left.pack_propagate(False)
+
+            search_frame = tk.Frame(left, bg="#ffffff")
+            search_frame.pack(fill=tk.X, pady=(0, 8))
             tk.Label(
                 search_frame,
                 text="搜索 Mod：",
@@ -288,26 +299,46 @@ class ModSelectDialog(tk.Toplevel):
                 padx=8,
             ).pack(side=tk.LEFT, padx=(8, 0))
 
-            frame = tk.Frame(self, bg="#ffffff")
-            frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=(0, 10))
-            scrollbar = tk.Scrollbar(frame)
+            list_frame = tk.Frame(left, bg="#ffffff")
+            list_frame.pack(fill=tk.BOTH, expand=True)
+            scrollbar = tk.Scrollbar(list_frame)
             scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-            self._lb = tk.Listbox(frame, selectmode="multiple", yscrollcommand=scrollbar.set,
+            self._lb = tk.Listbox(list_frame, selectmode="multiple", yscrollcommand=scrollbar.set,
                                   font=("Microsoft YaHei", 9), bg="#ffffff", fg="#333333",
                                   activestyle="none", exportselection=False)
             self._lb.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
             scrollbar.config(command=self._lb.yview)
             self._lb.bind("<<ListboxSelect>>", self._on_listbox_select)
+            self._lb.bind("<Button-1>", self._on_listbox_click, add="+")
 
             self._count_label = tk.Label(
-                self,
+                left,
                 text="",
                 font=("Microsoft YaHei", 9),
                 bg="#ffffff",
                 fg="#666666",
                 anchor="w",
             )
-            self._count_label.pack(fill=tk.X, padx=20, pady=(0, 8))
+            self._count_label.pack(fill=tk.X, pady=(6, 0))
+
+            # ── 右侧：MOD 信息预览 ──
+            right = tk.Frame(body, bg="#ffffff", width=430)
+            right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(12, 0))
+            right.pack_propagate(False)
+            tk.Label(right, text="MOD 信息（MC百科 / Modrinth）", font=("Microsoft YaHei", 10, "bold"),
+                     fg="#333333", bg="#ffffff").pack(anchor=tk.W, pady=(0, 6))
+            self._preview_text = tk.Text(right, font=("Microsoft YaHei", 9), bg="#f8f9ff", fg="#333333",
+                                         bd=1, relief=tk.SOLID, wrap=tk.WORD, state=tk.DISABLED)
+            self._preview_text.pack(fill=tk.BOTH, expand=True)
+            bottom_row = tk.Frame(right, bg="#ffffff")
+            bottom_row.pack(fill=tk.X, pady=(4, 0))
+            self._preview_status = tk.Label(bottom_row, text="点击左侧 Mod 查看信息", font=("Microsoft YaHei", 8),
+                                            fg="#888888", bg="#ffffff", anchor="w")
+            self._preview_status.pack(side=tk.LEFT, fill=tk.X, expand=True)
+            self._preview_open_btn = tk.Button(bottom_row, text="🌐 打开 MC百科", font=("Microsoft YaHei", 8),
+                                               command=self._open_preview_link, bg="#e3f2fd", fg="#1565c0",
+                                               bd=1, relief=tk.SOLID, cursor="hand2", state=tk.DISABLED)
+            self._preview_open_btn.pack(side=tk.RIGHT)
 
             self._search_var.trace_add("write", self._on_search_changed)
             self._rebuild_list()
@@ -385,6 +416,102 @@ class ModSelectDialog(tk.Toplevel):
     def _on_listbox_select(self, _event=None):
         self._sync_visible_selection()
         self._update_count()
+        # 键盘/程序选择：预览最后激活的项
+        try:
+            sel = self._lb.curselection()
+            if sel:
+                self._show_preview(self._visible_mods[sel[-1]])
+        except Exception:
+            pass
+
+    def _on_listbox_click(self, event):
+        """鼠标点击列表项：切换勾选的同时预览该项的 MOD 信息。"""
+        try:
+            index = self._lb.nearest(event.y)
+            if 0 <= index < len(self._visible_mods):
+                self._show_preview(self._visible_mods[index])
+        except Exception:
+            pass
+
+    def _set_preview_text(self, text):
+        self._preview_text.config(state=tk.NORMAL)
+        self._preview_text.delete("1.0", tk.END)
+        self._preview_text.insert("1.0", text)
+        self._preview_text.config(state=tk.DISABLED)
+
+    def _show_preview(self, mod):
+        """点击列表项时，右侧立即展示本地信息，同时异步拉取平台详情。"""
+        self._current_preview_mod = mod
+        mod_id = mod.get("mod_id", "")
+        name = mod.get("mod_name", mod_id)
+        cat_cn = CAT_LABEL.get(mod.get("category", "unknown"), mod.get("category", "?"))
+        self._set_preview_text(
+            f"【{name}】\n"
+            f"Mod ID: {mod_id}\n"
+            f"分类: {cat_cn}\n\n"
+            "正在从 MC百科 / Modrinth 获取详情，请稍候..."
+        )
+        self._preview_status.config(text="查询中...", fg="#ff9800")
+        self._preview_open_btn.config(state=tk.DISABLED)
+        self._preview_request_id += 1
+        request_id = self._preview_request_id
+        threading.Thread(
+            target=self._preview_thread,
+            args=(request_id, mod),
+            daemon=True,
+        ).start()
+
+    def _preview_thread(self, request_id, mod):
+        try:
+            import mod_info
+            info = mod_info.fetch_mod_info(
+                mod.get("mod_id", ""),
+                local_name=mod.get("mod_name", ""),
+                local_category=mod.get("category", ""),
+            )
+            text = mod_info.format_mod_info(info)
+        except Exception as exc:
+            info = None
+            text = (
+                f"【{mod.get('mod_name', '?')}】\n"
+                f"Mod ID: {mod.get('mod_id', '?')}\n\n"
+                f"查询失败: {exc}\n\n可点击下方「打开 MC百科」手动查询。"
+            )
+        self.after(0, self._on_preview_result, request_id, info, text)
+
+    def _on_preview_result(self, request_id, info, text):
+        if request_id != self._preview_request_id:
+            return  # 用户已切到其他 Mod
+        self._set_preview_text(text)
+        if info and isinstance(info, dict):
+            platform = info.get("platform", "")
+            if platform == "mcmod":
+                self._preview_status.config(text="来源: MC百科", fg="#4caf50")
+            elif platform == "modrinth":
+                self._preview_status.config(text="来源: Modrinth", fg="#4caf50")
+            else:
+                self._preview_status.config(text="未获取到平台资料（可打开链接查询）", fg="#c77700")
+            self._preview_links = info.get("links") or {}
+            self._preview_open_btn.config(state=tk.NORMAL)
+        else:
+            self._preview_links = {}
+            self._preview_open_btn.config(state=tk.NORMAL)
+            self._preview_status.config(text="查询失败", fg="#f44336")
+
+    def _open_preview_link(self):
+        """打开当前预览 Mod 的 MC百科页面（详情页或搜索页）。"""
+        mod = getattr(self, "_current_preview_mod", None)
+        links = getattr(self, "_preview_links", None) or {}
+        url = links.get("mcmod") or ""
+        if not url and mod:
+            mod_id = mod.get("mod_id", "")
+            url = f"https://search.mcmod.cn/s?key={mod_id}"
+        if not url:
+            return
+        try:
+            webbrowser.open(url)
+        except Exception:
+            subprocess.Popen(["explorer", url], shell=True)
 
     def _select_all(self):
         for mod in self._visible_mods:
@@ -413,178 +540,6 @@ class ModSelectDialog(tk.Toplevel):
     def _on_cancel(self):
         self.result = None
         self.destroy()
-
-
-class ModInfoDialog(tk.Toplevel):
-    """MOD 信息窗口：左侧列出已选 MOD，右侧展示来自 MC百科/Modrinth 的详情。"""
-
-    def __init__(self, parent, mods):
-        super().__init__(parent)
-        self.title("MOD 信息 — MC百科 / Modrinth")
-        self.geometry("780x580")
-        self.minsize(640, 420)
-        self.configure(bg="#ffffff")
-        self.mods = list(mods or [])
-        self._current = None
-        self._request_id = 0
-        self._fetching = False
-
-        try:
-            df = ("Microsoft YaHei", 10)
-            sf = ("Microsoft YaHei", 9)
-
-            body = tk.Frame(self, bg="#ffffff")
-            body.pack(fill=tk.BOTH, expand=True, padx=14, pady=(14, 8))
-
-            # ── 左侧：已选 MOD 列表 ──
-            left = tk.Frame(body, bg="#ffffff", width=280)
-            left.pack(side=tk.LEFT, fill=tk.Y)
-            left.pack_propagate(False)
-            tk.Label(left, text="已选 MOD（点击查看详情）", font=("Microsoft YaHei", 10, "bold"),
-                     fg="#333333", bg="#ffffff").pack(anchor=tk.W, pady=(0, 6))
-            list_host = tk.Frame(left, bg="#ffffff")
-            list_host.pack(fill=tk.BOTH, expand=True)
-            scrollbar = tk.Scrollbar(list_host)
-            scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-            self.listbox = tk.Listbox(
-                list_host, yscrollcommand=scrollbar.set, font=sf,
-                bg="#ffffff", fg="#333333", activestyle="none",
-                exportselection=False, bd=1, relief=tk.SOLID,
-            )
-            self.listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-            scrollbar.config(command=self.listbox.yview)
-            self.listbox.bind("<<ListboxSelect>>", self._on_select)
-
-            # ── 右侧：详情区 ──
-            right = tk.Frame(body, bg="#ffffff")
-            right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(12, 0))
-            self.detail_text = tk.Text(
-                right, font=df, bg="#fafafa", fg="#333333",
-                bd=1, relief=tk.SOLID, wrap=tk.WORD, state=tk.DISABLED,
-            )
-            self.detail_text.pack(fill=tk.BOTH, expand=True)
-
-            # ── 底部按钮 ──
-            btnf = tk.Frame(self, bg="#ffffff")
-            btnf.pack(fill=tk.X, padx=14, pady=(0, 12))
-            self.status_label = tk.Label(btnf, text="", font=sf, fg="#888888", bg="#ffffff")
-            self.status_label.pack(side=tk.LEFT)
-            self.open_btn = tk.Button(
-                btnf, text="🌐 打开 MC百科", command=self._open_platform,
-                bg="#4a90d9", fg="#ffffff", font=sf, bd=0,
-                cursor="hand2", activebackground="#357abd", activeforeground="#ffffff",
-                padx=14, pady=5, state=tk.DISABLED,
-            )
-            self.open_btn.pack(side=tk.RIGHT)
-            tk.Button(
-                btnf, text="关闭", command=self.destroy, font=sf,
-                bg="#cccccc", fg="#ffffff", bd=0, padx=18, pady=5,
-            ).pack(side=tk.RIGHT, padx=(0, 10))
-
-            for mod in self.mods:
-                name = mod.get("mod_name", "?")
-                mod_id = mod.get("mod_id", "?")
-                self.listbox.insert(tk.END, f"{name}  ({mod_id})")
-
-            self.transient(parent)
-            self._center(parent)
-            if self.mods:
-                self.listbox.selection_set(0)
-                self._on_select()
-        except Exception as exc:
-            messagebox.showerror("错误", f"无法创建 MOD 信息窗口: {exc}")
-            self.destroy()
-
-    def _center(self, parent):
-        try:
-            self.update_idletasks()
-            pw, ph = parent.winfo_width(), parent.winfo_height()
-            px, py = parent.winfo_x(), parent.winfo_y()
-            w, h = self.winfo_width(), self.winfo_height()
-            self.geometry(f"{w}x{h}+{px+(pw-w)//2}+{py+(ph-h)//2}")
-        except Exception:
-            pass
-
-    def _set_detail(self, text):
-        self.detail_text.config(state=tk.NORMAL)
-        self.detail_text.delete("1.0", tk.END)
-        self.detail_text.insert("1.0", text)
-        self.detail_text.config(state=tk.DISABLED)
-
-    def _on_select(self, _event=None):
-        sel = self.listbox.curselection()
-        if not sel:
-            return
-        mod = self.mods[sel[0]]
-        self._current = mod
-        self.open_btn.config(state=tk.NORMAL)
-        # 先展示本地已知信息，同时后台异步获取平台详情
-        mod_id = mod.get("mod_id", "")
-        self._set_detail(
-            f"正在获取 {mod.get('mod_name', mod_id)} 的信息...\n\n"
-            f"Mod ID: {mod_id}\n"
-            "（将尝试从 MC百科、Modrinth 获取，请稍候）"
-        )
-        self.status_label.config(text="查询中...", fg="#ff9800")
-        self._request_id += 1
-        request_id = self._request_id
-        threading.Thread(
-            target=self._fetch_thread,
-            args=(request_id, mod),
-            daemon=True,
-        ).start()
-
-    def _fetch_thread(self, request_id, mod):
-        try:
-            import mod_info
-            info = mod_info.fetch_mod_info(
-                mod.get("mod_id", ""),
-                local_name=mod.get("mod_name", ""),
-                local_category=mod.get("category", ""),
-            )
-            text = mod_info.format_mod_info(info)
-        except Exception as exc:
-            info = None
-            text = (
-                f"【{mod.get('mod_name', '?')}】\n"
-                f"Mod ID: {mod.get('mod_id', '?')}\n\n"
-                f"查询失败: {exc}\n\n"
-                "可点击下方“打开 MC百科”手动查询。"
-            )
-        self.after(0, self._show_info, request_id, info, text)
-
-    def _show_info(self, request_id, info, text):
-        if request_id != self._request_id:
-            return  # 用户已切换到其他 MOD
-        self._set_detail(text)
-        if info and isinstance(info, dict):
-            platform = (info.get("platform") or "")
-            if platform == "mcmod":
-                self.status_label.config(text="来源: MC百科", fg="#4caf50")
-            elif platform == "modrinth":
-                self.status_label.config(text="来源: Modrinth", fg="#4caf50")
-            else:
-                self.status_label.config(text="未获取到平台资料，可打开链接查询", fg="#c77700")
-            self._last_links = info.get("links") or {}
-        else:
-            self._last_links = {}
-            self.status_label.config(text="查询失败", fg="#f44336")
-
-    def _open_platform(self):
-        """打开当前 MOD 的平台页面（优先 MC百科详情页，其次搜索页）。"""
-        if self._current is None:
-            return
-        links = getattr(self, "_last_links", None)
-        url = ""
-        if links and links.get("mcmod"):
-            url = links["mcmod"]
-        else:
-            mod_id = self._current.get("mod_id", "")
-            url = f"https://search.mcmod.cn/s?key={mod_id}"
-        try:
-            webbrowser.open(url)
-        except Exception:
-            subprocess.Popen(["explorer", url], shell=True)
 
 
 class ModeSelectDialog(tk.Toplevel):
@@ -814,8 +769,6 @@ class App:
             self.mod_status_label.config(text="检测到 0 个Mod  |  已选: 0", fg="#888888")
         if hasattr(self, 'save_prompt_api_btn'):
             self.save_prompt_api_btn.config(state=tk.NORMAL if n > 0 else tk.DISABLED)
-        if hasattr(self, 'mod_info_btn'):
-            self.mod_info_btn.config(state=tk.NORMAL if n > 0 else tk.DISABLED)
         self._check_config_ready()
         # 恢复/扫描提示放在最后，避免被 _check_config_ready 的默认提示覆盖
         if n:
@@ -897,8 +850,6 @@ class App:
                 self.generate_btn.config(state=tk.DISABLED, bg="#cccccc")
             if hasattr(self, 'save_prompt_api_btn'):
                 self.save_prompt_api_btn.config(state=tk.DISABLED)
-            if hasattr(self, 'mod_info_btn'):
-                self.mod_info_btn.config(state=tk.DISABLED)
             self.set_info(t("ready"), "info"); return
         # Import 模式只需要 Mod 和文件夹，不需要检查 API
         if self.mode == "import":
@@ -1201,8 +1152,6 @@ class App:
         self.browse_btn.pack(side=tk.RIGHT, padx=(6, 0))
         self.select_mods_btn = tk.Button(row2, font=sf, command=self._open_mod_select, bg="#e8f5e9", fg="#2e7d32", bd=1, relief=tk.SOLID, cursor="hand2", activebackground="#c8e6c9", padx=10)
         self.select_mods_btn.pack(side=tk.RIGHT, padx=(6, 0))
-        self.mod_info_btn = tk.Button(row2, font=sf, command=self._open_mod_info, bg="#e3f2fd", fg="#1565c0", bd=1, relief=tk.SOLID, cursor="hand2", activebackground="#bbdefb", padx=10, state=tk.DISABLED)
-        self.mod_info_btn.pack(side=tk.RIGHT, padx=(6, 0))
         self.mod_status_label = tk.Label(sec2, font=sf, fg="#888888", bg="#ffffff")
         self.mod_status_label.pack(anchor=tk.W, pady=(4, 0))
 
@@ -1588,8 +1537,6 @@ class App:
             self.selected_mods = []
             if hasattr(self, 'save_prompt_api_btn'):
                 self.save_prompt_api_btn.config(state=tk.DISABLED)
-            if hasattr(self, 'mod_info_btn'):
-                self.mod_info_btn.config(state=tk.DISABLED)
             try:
                 self._detected_mods = scan_mod_folder(folder)
                 n = len(self._detected_mods)
@@ -1642,23 +1589,8 @@ class App:
             self.mod_status_label.config(text=f"检测到 {len(self._detected_mods)} 个Mod  |  已选: {n}", fg="#4caf50" if n else "#888888")
             if n > 0 and hasattr(self, 'save_prompt_api_btn'):
                 self.save_prompt_api_btn.config(state=tk.NORMAL)
-            if hasattr(self, 'mod_info_btn'):
-                self.mod_info_btn.config(state=tk.NORMAL if n > 0 else tk.DISABLED)
             self._save_config()
         self._check_config_ready()
-
-    def _open_mod_info(self):
-        """打开 MOD 信息窗口（MC百科 / Modrinth 等平台查询详情）。"""
-        if not self.selected_mods:
-            messagebox.showinfo("提示", "请先选择 Mod，再查看 MOD 信息。")
-            return
-        try:
-            import mod_info
-            mod_info  # 确保模块可用
-        except Exception as exc:
-            messagebox.showerror("错误", f"无法加载 MOD 信息模块: {exc}")
-            return
-        ModInfoDialog(self.root, self.selected_mods)
 
     def _refresh_text(self):
         if self.mode == "api":
@@ -1757,14 +1689,6 @@ class App:
                 self.save_btn.config(state=s)
             self.lang_btn.config(state=s)
             self.select_mods_btn.config(state=s)
-            if hasattr(self, 'mod_info_btn'):
-                # 生成中禁用；解锁时按是否有已选 Mod 恢复
-                if locked:
-                    self.mod_info_btn.config(state=tk.DISABLED)
-                else:
-                    self.mod_info_btn.config(
-                        state=tk.NORMAL if self.selected_mods else tk.DISABLED
-                    )
             if hasattr(self, 'save_prompt_api_btn'):
                 self.save_prompt_api_btn.config(state=s)
             # 锁定供应商/模型相关控件
