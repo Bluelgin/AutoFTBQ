@@ -2083,10 +2083,14 @@ class App:
             self._update_checking = False
 
     def _on_update_result(self, latest_ver, update_info=None):
+        # 先在函数体内归一化 update_info：若在嵌套函数 _show_dialog 中
+        # 执行 “update_info = update_info or {}”，赋值会让 update_info
+        # 变成内层局部变量，右侧引用未赋值变量会抛 UnboundLocalError。
+        update_info = dict(update_info or {})
+
         def _show_dialog():
             self._update_checking = False
             self._update_checked = True
-            update_info = update_info or {}
             if not latest_ver:
                 if update_info.get("error"):
                     self.update_label.config(text="更新检查失败（点击重试）", fg="#c77700")
