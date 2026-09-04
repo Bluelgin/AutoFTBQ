@@ -766,12 +766,17 @@ class App:
         self._check_config_ready()
 
     def _restore_selected_mods(self):
-        """启动时恢复上次选择的 Mod（文件夹未变化时按文件名匹配）。"""
+        """启动时自动检查上次的 Mod 文件夹：扫描 MOD 文件并恢复已选 Mod。
+
+        只要 config 里保存过有效的 Mod 文件夹，启动就会自动扫描其中的
+        .jar/.zip 并显示数量，用户无需重新浏览选择文件夹；
+        文件夹未变化时还会按文件名恢复上次勾选的 Mod。
+        """
+        current_folder = self.mod_folder_var.get().strip()
+        if not current_folder or not os.path.isdir(current_folder):
+            return
         saved = self.config.get("selected_mods") or []
         saved_folder = self.config.get("selected_mods_folder") or ""
-        current_folder = self.mod_folder_var.get().strip()
-        if not saved or not saved_folder or not current_folder:
-            return
         try:
             same_folder = os.path.normcase(os.path.abspath(saved_folder)) == os.path.normcase(
                 os.path.abspath(current_folder)
@@ -779,7 +784,7 @@ class App:
         except Exception:
             same_folder = False
         if not same_folder:
-            return
+            saved = []  # 文件夹已变化：只扫描，不恢复旧选择
 
         def _scan():
             try:
@@ -795,16 +800,33 @@ class App:
         self._detected_mods = mods
         self.selected_mods = [m for m in mods if m.get("filename") in saved_set]
         n = len(self.selected_mods)
+        total = len(mods)
         if n:
             self.mod_status_label.config(
-                text=f"检测到 {len(mods)} 个Mod  |  已选: {n}", fg="#4caf50"
+                text=f"检测到 {total} 个Mod  |  已选: {n}", fg="#4caf50"
             )
+        elif total:
+            # 没有可恢复的选择：自动扫描结果已就绪，提示用户直接勾选
+            self.mod_status_label.config(
+                text=f"检测到 {total} 个Mod  |  已选: 0", fg="#888888"
+            )
+        else:
+            self.mod_status_label.config(text="检测到 0 个Mod  |  已选: 0", fg="#888888")
+        if hasattr(self, 'save_prompt_api_btn'):
+            self.save_prompt_api_btn.config(state=tk.NORMAL if n > 0 else tk.DISABLED)
+        if hasattr(self, 'mod_info_btn'):
+            self.mod_info_btn.config(state=tk.NORMAL if n > 0 else tk.DISABLED)
+        self._check_config_ready()
+        # 恢复/扫描提示放在最后，避免被 _check_config_ready 的默认提示覆盖
+        if n:
             self.set_info(f"已恢复上次选择的 {n} 个Mod", "success")
-            if hasattr(self, 'save_prompt_api_btn'):
-                self.save_prompt_api_btn.config(state=tk.NORMAL)
-            if hasattr(self, 'mod_info_btn'):
-                self.mod_info_btn.config(state=tk.NORMAL)
-            self._check_config_ready()
+        elif total:
+            self.set_info(
+                f"已自动扫描 {total} 个Mod，点击「选择 Mod」勾选即可，无需重新选择文件夹",
+                "info",
+            )
+        else:
+            self.set_info("文件夹中没有检测到 .jar/.zip Mod 文件", "warning")
 
     def _load_config(self):
         if os.path.exists(CONFIG_PATH):
@@ -1585,13 +1607,14 @@ class App:
                     detected_output = suggested_output_dir(folder)
                     if detected_output:
                         self.output_dir_var.set(detected_output)
-                        self._save_config()
                 if n:
                     self.set_info(t("found_mods", n), "success")
                 else:
                     self.set_info(t("no_mods"), "warning")
             except Exception as e:
                 self.set_info(f"{t('dir_error')}: {e}", "error")
+            # 立即记住新文件夹，下次启动自动扫描恢复
+            self._save_config()
             self._check_config_ready()
 
     def _open_mod_select(self):
