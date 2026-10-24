@@ -1,5 +1,10 @@
 # AutoFTBQ
 
+> [!IMPORTANT]
+> **项目迁移公告（2026 年 10 月）**：AutoFTBQ 的后续开发重心已转向 **[AutoFTBQ MCP](https://github.com/Bluelgin/AutoFTBQ-MCP)**。本仓库作为旧版桌面工具保留，不再作为新功能的主要开发分支。
+>
+> 新项目以 Minecraft Mod 的形式在游戏内提供 FTB Quests 实时数据与编辑能力，可通过 MCP 连接 Codex 等外部 AI Agent。它**不是**本项目 EXE 的原地升级，也不会自动迁移旧任务书或配置。当前主要适配 Minecraft 1.20.1 / Forge 47.x / FTB Quests 2001.x，真实游戏内操作仍需自行验证；旧版离线生成工具和历史 Release 继续保留。
+
 一个帮你把 Minecraft 整合包变成 FTB Quests 任务书的小工具。
 
 你只需要选择整合包或 `mods` 文件夹，AutoFTBQ 会扫描 Mod、物品、配方和部分 KubeJS 内容，再交给 AI 规划任务，最后输出可以放进 FTB Quests 的 SNBT 文件。
